@@ -1,0 +1,59 @@
+{
+    "version": 3,
+    "configurePresets": [
+        {
+            "name": "debug",
+            "displayName": "Debug - MSVC x64 + Ninja + Qt5",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build",
+            "toolset": {
+                "value": "host=x64",
+                "strategy": "external"
+            },
+            "environment": {
+                "INCLUDE": "D:/Microsoft Visual Studio/18/BuildTools/VC/Tools/MSVC/14.51.36231/include;D:/Windows Kits/10/Include/10.0.26100.0/ucrt;D:/Windows Kits/10/Include/10.0.26100.0/um;D:/Windows Kits/10/Include/10.0.26100.0/shared;D:/Windows Kits/10/Include/10.0.26100.0/winrt;D:/Windows Kits/10/Include/10.0.26100.0/cppwinrt",
+                "LIB": "D:/Microsoft Visual Studio/18/BuildTools/VC/Tools/MSVC/14.51.36231/lib/x64;D:/Windows Kits/10/Lib/10.0.26100.0/um/x64;D:/Windows Kits/10/Lib/10.0.26100.0/ucrt/x64",
+                "LIBPATH": "D:/Microsoft Visual Studio/18/BuildTools/VC/Tools/MSVC/14.51.36231/lib/x64"
+            },
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_C_COMPILER": "D:/Microsoft Visual Studio/18/BuildTools/VC/Tools/MSVC/14.51.36231/bin/Hostx64/x64/cl.exe",
+                "CMAKE_CXX_COMPILER": "D:/Microsoft Visual Studio/18/BuildTools/VC/Tools/MSVC/14.51.36231/bin/Hostx64/x64/cl.exe",
+                "CMAKE_MAKE_PROGRAM": "D:/Microsoft Visual Studio/18/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe",
+                "CMAKE_RC_COMPILER": "D:/Windows Kits/10/bin/10.0.26100.0/x64/rc.exe",
+                "CMAKE_MT": "D:/Windows Kits/10/bin/10.0.26100.0/x64/mt.exe",
+                "Qt5_DIR": "D:/Qt5/5.9.2/msvc2017_64/lib/cmake/Qt5",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+            }
+        },
+        {
+            "name": "release",
+            "displayName": "Release - MSVC x64 + Ninja + Qt5",
+            "inherits": "debug",
+            "binaryDir": "${sourceDir}/build-release",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "OFF",
+                "AOE_DEPLOY": "ON"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "debug",
+            "displayName": "Build Debug",
+            "configurePreset": "debug",
+            "targets": [
+                "aoe"
+            ]
+        },
+        {
+            "name": "release",
+            "displayName": "Build Release",
+            "configurePreset": "release",
+            "targets": [
+                "aoe"
+            ]
+        }
+    ]
+}

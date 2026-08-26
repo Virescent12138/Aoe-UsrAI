@@ -1,0 +1,694 @@
+﻿#include "GameWidget.h"
+#include "ui_GameWidget.h"
+#include "Map.h"
+#include <QDateTime>
+#include<QDateTime>
+#include "library/perlin_noise/PerlinNoise.hpp"
+GameWidget::GameWidget(QWidget *parent) :
+    QWidget(parent),
+    ui(new Ui::GameWidget)
+{
+    ui->setupUi(this);
+    mainwidget=(MainWidget*)this->parentWidget();
+    gameBuffer=QPixmap(this->width(),this->height());
+    setFocusPolicy(Qt::StrongFocus);
+    connect(mainwidget,SIGNAL(mapmove()),this,SLOT(movemap()));
+}
+
+GameWidget::~GameWidget()
+{
+    delete ui;
+}
+void GameWidget::paintEvent(QPaintEvent *)
+{
+    //判断是否关闭了渲染模式
+    if(OffScreen)return;
+    //重置buffer的大小
+    if(gameBuffer.width()!=this->width()||gameBuffer.height()!=this->height()){
+        gameBuffer=QPixmap(this->width(),this->height());
+    }
+    //
+    QPainter painter(&gameBuffer);
+    showLine = mainwidget->isPaused() && !IsExamining && !EditorMode;
+    QPainterPath debugGridPath;
+
+    painter.setPen(Qt::black);
+
+    painter.fillRect(rect(), Qt::black);
+
+    //检测点x y是否落在屏幕内
+    static QRect winRect(0,0,GAMEWIDGET_WIDTH,GAMEWIDGET_HEIGHT);
+    static auto InRect=[&](int x,int y)->bool{
+      if(x>=winRect.x()&&x<=winRect.x()+winRect.width()&&y>=winRect.y()&&y<=winRect.y()+winRect.height())return 1;
+      return 0;
+    };
+    static auto RectInRect=[&](int x,int y,int w,int h)->bool{
+        return (InRect(x,y)||InRect(x+w,y)||InRect(x+w,y+h)||InRect(x,y+h));
+    };
+
+    //地图绘制部分
+    int x1=BlockDR;//x1，y1作为参考坐标，用来每次循环初始化x2，y2的值
+    int y1=BlockUR;//x2，y2则是引导绘制，用来实际判断cell中的内容
+    int x2;
+    int y2;
+
+    for(int i = 0; i < GAMEWIDGET_HEIGHT / (mainwidget->map->cell[0][0].block[0]->front().pix.height() / 2.0) + 6; i++)
+    {
+
+
+        x2=x1;
+        y2=y1;
+        if(i%2==1)
+        {
+            y1--;
+        }else if(i%2==0)
+        {
+            x1++;
+        }
+        //此处改动不采用nowres来显示图片
+        for(int j = 0; j < GAMEWIDGET_WIDTH / Block::block[0]->front().pix.width() + 1; j++) // 行绘制
+        {
+            if(x2>=MAP_L||y2>=MAP_U||x2<0||y2<0)
+            {
+                x2++;
+                y2++;
+                continue;
+            }
+            Block&block=mainwidget->map->cell[x2][y2];
+            int x,y,w,h;
+            QPixmap*pix=0;
+            // 此处以下的drawPixmap函数中，添加偏移量OffsetX/Y以对齐各地块
+            if(i%2==0)x=-32+64*j + block.getOffsetX(),y=-16+16*i + block.getOffsetY();
+            if(i%2==1)x=64*j + block.getOffsetX(),y=-16+16*i + block.getOffsetY();
+            w=Block::block[block.Num]->front().pix.width(),h=Block::block[block.Num]->front().pix.height();
+            list<ImageResource>*targetList=0;
+            if(mainwidget->map->cell[x2][y2].Visible == true && mainwidget->map->cell[x2][y2].Explored == true)targetList=Block::block[block.Num];
+            else if(mainwidget->map->cell[x2][y2].Visible == false && mainwidget->map->cell[x2][y2].Explored == true)targetList=Block::grayblock[block.Num];
+            else if(mainwidget->map->cell[x2][y2].Visible == false && mainwidget->map->cell[x2][y2].Explored == false)targetList=Block::blackblock[block.Num];
+            //如果没超出屏幕，那么绘制
+            if(RectInRect(x,y,w,h)){
+                //如果是海洋
+                if(block.getMapType()==MAPTYPE_OCEAN){
+                    static QPixmap*ocean=nullptr;
+                    static QPixmap*grayOcean=0;
+                    if(!ocean)
+                    {
+                        ocean=new QPixmap(resMap["Sea_Deep"].front());
+                        grayOcean=new QPixmap(applyTransparencyEffect(*ocean,0.5));
+                    }
+                    auto&block=mainwidget->map->cell[x2][y2];
+                    if(block.Visible&&block.Explored)pix=ocean;
+                    else if(block.Explored)pix=grayOcean;
+                    else pix=0;
+                }
+                else pix=&(targetList->front().pix);
+                //绘制
+                if(pix)
+                painter.drawPixmap(x,y,w,h,*pix);
+                if(showLine)
+                {
+                    const int cellWidth = qMax(1, w - 1);
+                    const int cellHeight = qMax(1, h - 1);
+                    debugGridPath.moveTo(x + cellWidth / 2.0, y);
+                    debugGridPath.lineTo(x + cellWidth, y + cellHeight / 2.0);
+                    debugGridPath.lineTo(x + cellWidth / 2.0, y + cellHeight);
+                    debugGridPath.lineTo(x, y + cellHeight / 2.0);
+                    debugGridPath.closeSubpath();
+                }
+            }
+            x2++;
+            y2++;
+        }
+    }
+    //清除内存图内容
+    emptymemorymap();
+
+    //绘制列表清空
+    std::vector<Coordinate*> drawlist;
+    static auto CheckInScreen=[&](Coordinate*coor)->bool{
+        int tx = tranX(coor->getDR()-DR, coor->getUR()-UR), ty = tranY(coor->getDR()-DR, coor->getUR()-UR);
+        // BlockDR、BlockUR
+        int tmpBlockDR = coor->getDR() / BLOCKSIDELENGTH, tmpBlockUR = coor->getUR() / BLOCKSIDELENGTH;
+        int x=tx - coor->getimageX() + mainwidget->map->cell[tmpBlockDR][tmpBlockUR].getOffsetX();
+        int y=coor->getimageY() - coor->getNowRes()->pix.height() + ty +  mainwidget->map->cell[tmpBlockDR][tmpBlockUR].getOffsetY();
+        int w=coor->getNowRes()->pix.width(),h=coor->getNowRes()->pix.height();
+        return RectInRect(x,y,w,h);
+    };
+
+    //地图资源相关 树木石块等
+    std::list<StaticRes*> *sr=&mainwidget->map->staticres;
+    if(!sr->empty())
+    {
+        std::list<StaticRes*>::iterator sriter=sr->begin();
+        while(sriter!=sr->end())
+        {
+            if(CheckInScreen(*sriter)&&(*sriter)->getexplored())
+                insert((*sriter),&drawlist);
+            else (*sriter)->setNotInWidget();
+            sriter++;
+        }
+    }
+    std::list<Animal *> *ar=&mainwidget->map->animal;
+    if(!ar->empty())
+    {
+        std::list<Animal *>::iterator ariter=ar->begin();
+        while(ariter!=ar->end())
+        {
+            if(CheckInScreen(*ariter)&&(*ariter)->getexplored())
+                insert((*ariter),&drawlist);
+            else (*ariter)->setNotInWidget();
+            ariter++;
+        }
+    }
+    //玩家的建筑部分 人物部分
+    for(int i=0;i<MAXPLAYER;i++)
+    {
+        std::list<Building *> *b=&(mainwidget->player[i]->build);
+        std::list<Building *>::iterator biter=b->begin();
+        while(!b->empty()&&biter!=b->end())
+        {
+            Coordinate *p=*biter;
+            if(CheckInScreen(*biter)&&(*biter)->getvisible())
+                insert(p,&drawlist);
+            else (*biter)->setNotInWidget();
+            biter++;
+        }
+
+        std::list<Human *> *h=&(mainwidget->player[i]->human);
+        std::list<Human *>::iterator hiter=h->begin();
+        while(!h->empty()&&hiter!=h->end())
+        {
+            Coordinate *p=*hiter;
+            if(CheckInScreen(*hiter)&&(*hiter)->getvisible()&&!(*hiter)->getTransported())
+                insert(p,&drawlist);
+            else (*hiter)->setNotInWidget();
+            hiter++;
+        }
+
+        //绘制投掷物
+        std::list<Missile *> *mis = &(mainwidget->player[i]->missile);
+        std::list<Missile *>::iterator misiter = mis->begin();
+        while(!mis->empty() && misiter!=mis->end())
+        {
+            Coordinate* p = *misiter;
+            insert(p , &drawlist);
+            misiter++;
+        }
+    }
+
+    if(nowobject!=NULL)
+    {
+        AddEdge(nowobject->getDR(),nowobject->getUR(),nowobject->getCrashLength(),nowobject->getCrashLength());
+    }
+    //绘制矩形线框
+    paintEdge(painter);
+    //绘制直线
+    paintLine(painter);
+    //
+    Building* buildOb = NULL;
+    //重置捕获
+    if(mainwidget->mouseEvent->HaveEvent())
+        LeftMouseObjCapture=RightMouseObjCaptrue=0;
+    //对drawlist按照H进行排序
+    {
+        sort(drawlist.begin(),drawlist.end(),[&](Coordinate*obj0,Coordinate*obj1)->bool{
+            return obj0->getimageH()<obj1->getimageH();
+        });
+    }
+    //drawlist正常绘制
+    if(!drawlist.empty())
+    {
+        auto iter=drawlist.begin();
+        while(iter!=drawlist.end())
+        {
+            // x、y坐标偏移量
+            Double dr=(*iter)->getViewDR(),ur=(*iter)->getViewUR();
+            int tx = tranX(dr-DR, ur-UR), ty = tranY(dr-DR, ur-UR);
+            // BlockDR、BlockUR
+            int tmpBlockDR = dr/ BLOCKSIDELENGTH, tmpBlockUR = ur / BLOCKSIDELENGTH;
+            int x=tx - (*iter)->getimageX() + mainwidget->map->cell[tmpBlockDR][tmpBlockUR].getOffsetX();
+            int y=(*iter)->getimageY() - (*iter)->getNowRes()->pix.height() + ty +  mainwidget->map->cell[tmpBlockDR][tmpBlockUR].getOffsetY();
+            int w=(*iter)->getNowRes()->pix.width(),h=(*iter)->getNowRes()->pix.height();
+            painter.drawPixmap(x,y,w,h,(*iter)->getNowRes()->pix);
+            (*iter)->printer_ToBuilding((void**)&buildOb);
+            if(buildOb != NULL && buildOb->getFireNowList() != NULL)
+            {
+                painter.drawPixmap(\
+                    tx - buildOb->getFireImageX() + mainwidget->map->cell[tmpBlockDR][tmpBlockUR].getOffsetX(),
+                    buildOb->getFireImageY() - buildOb->getFireNowRes()->pix.height() + ty + mainwidget->map->cell[tmpBlockDR][tmpBlockUR].getOffsetY(),
+                    buildOb->getFireNowRes()->pix.width(),
+                    buildOb->getFireNowRes()->pix.height(),
+                    buildOb->getFireNowRes()->pix
+                );
+            }
+            if(mainwidget->mouseEvent->HaveEvent()){//如果需要捕捉点击对象
+                tryCaptured=true;
+                int xx=mainwidget->mouseEvent->GetMemoryMapX()*4,yy=mainwidget->mouseEvent->GetMemoryMapY()*4;
+                int x=tranX(dr-DR, ur-UR)-(*iter)->getimageX()+mainwidget->map->cell[tmpBlockDR][tmpBlockUR].getOffsetX();
+                int y=(*iter)->getimageY()-(*iter)->getNowRes()->pix.height()+tranY(dr-DR,ur-UR)+mainwidget->map->cell[tmpBlockDR][tmpBlockUR].getOffsetY();
+                auto&res=*(*iter)->getNowRes();
+                int w=res.pix.width(),h=res.pix.height();
+                int localX=xx-x,localY=yy-y;
+                int sort=(*iter)->getSort();
+                bool isUnit=sort==SORT_FARMER||sort==SORT_ARMY;
+                // 单位使用整张贴图的矩形命中；建筑等对象仍使用非透明像素精确命中。
+                if(localX>=0&&localX<w&&localY>=0&&localY<h&&
+                        (isUnit||res.memorymap.getMemoryMap(localX,localY)!=0)){
+                    {
+                        int tp=mainwidget->mouseEvent->GetMouseEventType();
+                        if(tp==LEFT_PRESS){
+                            bool capturedUnit=LeftMouseObjCapture&&
+                                    (LeftMouseObjCapture->getSort()==SORT_FARMER||
+                                     LeftMouseObjCapture->getSort()==SORT_ARMY);
+                            // 左键选择时单位优先，避免后绘制的建筑覆盖单位命中结果。
+                            if(isUnit||!capturedUnit) LeftMouseObjCapture=*iter;
+                        }
+                        else if(tp==RIGHT_PRESS){
+                            RightMouseObjCaptrue=*iter;
+                        }
+                    }
+                }
+            }
+            //如果开启了编辑器,绘制内存图
+            if(EditorMode){
+                drawmemory(tranX(dr-DR, ur-UR)-(*iter)->getimageX(),
+                                       (*iter)->getimageY()-(*iter)->getNowRes()->pix.height()+tranY(dr-DR,ur-UR) +  mainwidget->map->cell[tmpBlockDR][tmpBlockUR].getOffsetY(),
+                                       (*(*iter)->getNowRes()),(*iter)->getglobalNum());
+            }
+            //
+            (*iter)->setInWidget();
+            iter++;
+        }
+    }
+
+    if(showLine)
+    {
+        painter.save();
+        QPen gridPen(QColor(255, 255, 255, 55));
+        gridPen.setWidthF(1.0);
+        gridPen.setCosmetic(true);
+        painter.setPen(gridPen);
+        painter.setBrush(Qt::NoBrush);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.drawPath(debugGridPath);
+        painter.restore();
+    }
+
+    //对飞行物进行绘制拖尾特效
+    paintEffect(painter);
+    //绘制buffer
+    QPainter drawBuffer(this);
+    drawBuffer.drawPixmap(0,0,gameBuffer.width(),gameBuffer.height(),gameBuffer);
+
+}
+
+void GameWidget::paintEdge(QPainter &painter)
+{
+    while(EdgeQueue.size()){
+        auto ele=EdgeQueue.front();
+        EdgeQueue.pop();
+        paintEdge(painter,get<0>(ele),get<1>(ele),get<2>(ele),get<3>(ele),get<4>(ele));
+    }
+}
+
+void GameWidget::paintEdge(QPainter &painter,Double dr,Double ur,Double w,Double h,QColor color)
+{
+    painter.setPen(color);
+    int width=w*4;
+    int height=h*2;
+    int tempBlockDR = dr / BLOCKSIDELENGTH, tempBlockUR = ur / BLOCKSIDELENGTH;
+    int X=tranX(dr-DR,ur-UR)-w*2 + mainwidget->map->getCellOffsetX(tempBlockDR,tempBlockUR);
+    int Y=tranY(dr-DR,ur-UR) - height / 2 + mainwidget->map->getCellOffsetY(tempBlockDR,tempBlockUR);
+    QPolygonF diamond;
+    diamond << QPointF(X+width/2, Y);
+    diamond << QPointF(X+width, Y+height/2);
+    diamond << QPointF(X+width/2, Y+height);
+    diamond << QPointF(X, Y+height/2);
+    painter.drawPolygon(diamond);
+}
+
+void GameWidget::paintLine(QPainter &painter)
+{
+    while(LineQueue.empty()==false){
+        auto ele=LineQueue.front();
+        LineQueue.pop();
+        Double dr0=get<0>(ele),ur0=get<1>(ele),dr1=get<2>(ele),ur1=get<3>(ele);
+        QColor color=get<4>(ele);
+        painter.setPen(color);
+        int tempBlockDR0 = dr0 / BLOCKSIDELENGTH, tempBlockUR0 = ur0 / BLOCKSIDELENGTH;
+        int tempBlockDR1 = dr1 / BLOCKSIDELENGTH, tempBlockUR1 = ur1 / BLOCKSIDELENGTH;
+        int X0=tranX(dr0-DR,ur0-UR)+ mainwidget->map->getCellOffsetX(tempBlockDR0,tempBlockUR0);
+        int Y0=tranY(dr0-DR,ur0-UR)+ mainwidget->map->getCellOffsetY(tempBlockDR0,tempBlockUR0);
+        int X1=tranX(dr1-DR,ur1-UR)+ mainwidget->map->getCellOffsetX(tempBlockDR1,tempBlockUR1);
+        int Y1=tranY(dr1-DR,ur1-UR)+ mainwidget->map->getCellOffsetY(tempBlockDR1,tempBlockUR1);
+        QPolygonF diamond;
+        diamond<<QPointF(X0,Y0);
+        diamond<<QPointF(X1,Y1);
+        painter.drawPolygon(diamond);
+    }
+}
+
+void GameWidget::paintEffect(QPainter &painter)
+{
+    //预生成一定数量的拖尾
+    static vector<QPixmap> trail_effect;
+    if(trail_effect.empty()){
+        for(int i=0;i<100;++i){
+            trail_effect.push_back(QPixmap::fromImage(GenBoulderTrailEffect()));
+        }
+    }
+    //拖尾数据类型
+    struct Data{
+        Double dr,ur;
+        int time;
+        int index;
+    };
+    //
+    static list<Data>data;
+    //获取所有的投出的巨石
+    vector<Missile*>missiles;
+    for(int i=0;i<MAXPLAYER;++i){
+        for(auto*m:mainwidget->player[i]->missile){
+            if(m->getNum()==Missile_Boulders){
+                missiles.push_back(m);
+            }
+        }
+    }
+    //创建数据
+    for(auto*missile:missiles){
+        if(missile->isNeedDelete())continue;
+        Double dr=missile->getViewDR(),ur=missile->getViewUR();
+        data.push_back({dr,ur,g_frame,int(Rand.nextRaw()%trail_effect.size())});
+    }
+    //开始绘制
+    for(auto itr=data.begin();itr!=data.end();){
+        auto &d=*itr;
+        Double dr=d.dr,ur=d.ur;
+        int tmpBlockDR=dr/BLOCKSIDELENGTH,tmpBlockUR=ur/BLOCKSIDELENGTH;
+        int tx = tranX(dr-DR, ur-UR), ty = tranY(dr-DR, ur-UR);
+        int x=tx+ mainwidget->map->cell[tmpBlockDR][tmpBlockUR].getOffsetX();
+        int y=ty +  mainwidget->map->cell[tmpBlockDR][tmpBlockUR].getOffsetY();
+        Double alpha=Double(1)-(g_frame-d.time)*Double(1)/Boulder_Trail_Effect_Duration;
+        if(alpha<Double(0)){
+            itr=data.erase(itr);
+            continue;
+        }
+        auto&pm=trail_effect[d.index];
+        painter.setOpacity(double(alpha));
+        painter.drawPixmap(x-pm.width()/2,y-pm.height()/2,pm.width(),pm.height(),pm);
+        ++itr;
+    }
+}
+
+void GameWidget::keyPressEvent(QKeyEvent *event)
+{
+    if(event->modifiers() == Qt::ControlModifier && event->key() == Qt::Key_Z){
+        //回滚状态
+        ResumePreState();
+    }
+}
+
+
+void GameWidget::SaveCurrentState(void *state)
+{
+    const static int MAXSIZE=119;//最多回滚119次
+    if(AllState.size()>MAXSIZE)AllState.pop_back();
+    AllState.push_front(state);
+}
+
+void *GameWidget::RollBackState()
+{
+    if(AllState.size()==0)return 0;
+    auto ans=AllState.front();
+    AllState.pop_front();
+    return ans;
+}
+
+void GameWidget::ResumePreState()
+{
+    GameState*state=(GameState*)RollBackState();
+    if(state==0)return;
+    //////////////////////
+    auto&cell=mainwidget->map->cell;
+    auto&heightMap=mainwidget->map->m_heightMap;
+    for(int i=0;i<MAP_L;++i){
+        for(int j=0;j<MAP_U;++j){
+            cell[i][j]=(state->cell)[i][j];
+        }
+    }
+
+    for(int i=0;i<GENERATE_L;++i){
+        for(int j=0;j<GENERATE_U;++j){
+            heightMap[i][j]=(state->m_heightMap)[i][j];
+        }
+    }
+
+    mainwidget->player[0]->human=state->myHuman;
+    mainwidget->player[0]->build=state->myBuilding;
+    mainwidget->player[1]->human=state->enemyHuman;
+    mainwidget->player[1]->build=state->enemyBuilding;
+    mainwidget->map->animal=state->animal;
+    mainwidget->map->staticres=state->resource;
+    ////释放内存
+    delete state;
+}
+
+Double GameWidget::TranGlobalPosToDR(int x, int y)
+{
+    return (tranDR(x, y) + DR) ;
+}
+
+Double GameWidget::TranGlobalPosToUR(int x, int y)
+{
+     return (tranUR(x, y) + UR) ;
+}
+
+void GameWidget::mousePressEvent(QMouseEvent *event)
+{
+    if(event->button()==Qt::LeftButton)
+    {
+        if(buildMode >= 0){
+            int hoverDR = (tranDR(event->x(), event->y()) + DR) / BLOCKSIDELENGTH;
+            int hoverUR = (tranUR(event->x(), event->y()) + UR) / BLOCKSIDELENGTH;
+            if(buildMode == BUILDING_GRANARY || buildMode == BUILDING_STOCK || buildMode == BUILDING_MARKET || buildMode == BUILDING_FARM\
+                 || buildMode == BUILDING_ARMYCAMP || buildMode == BUILDING_RANGE || buildMode == BUILDING_STABLE)
+            {
+                hoverDR--;
+                hoverUR--;
+            }
+            if(buildMode == BUILDING_HOME || buildMode == BUILDING_ARROWTOWER)
+            {
+                hoverUR--;
+            }
+            emit sendView(hoverDR, hoverUR, buildMode);
+            buildMode = -1;
+            QApplication::restoreOverrideCursor();
+        }
+    }
+    else if(event->button()==Qt::RightButton)
+    {
+        if(buildMode >= 0)
+        {
+            buildMode = -1;
+            QApplication::restoreOverrideCursor();
+        }
+    }
+}
+
+bool GameWidget::judgeinWindow(Double x, Double y)
+{
+    if(x>Double(0)&&x<Double(GAMEWIDGET_WIDTH)&&y>Double(0)&&y<Double(GAMEWIDGET_HEIGHT))
+    {
+        return 1;
+    }
+    return 0;
+}
+
+QImage GameWidget::GenBoulderTrailEffect()
+{
+    const int siz=50;
+    auto fade=[&](Double t)->Double{
+           return pow(t,3)*(t*(6*t-15)+10);
+         };
+    int w=siz,h=siz;
+    QImage img(w,h,QImage::Format_ARGB32);
+    const siv::PerlinNoise perlin{119};
+    uchar *bits = img.bits();
+    int bytesPerPixel = img.depth() / 8;
+    int ox=Rand.nextRaw(),oy=Rand.nextRaw();
+    int hw=w/2,hh=h/2;
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            // 计算当前像素的起始地址
+            uchar *pixel = bits + y * img.bytesPerLine() + x * bytesPerPixel;
+            // 读取RGB值（Qt中RGB32格式为BGR顺序）
+            uchar &b = pixel[0];
+            uchar &g = pixel[1];
+            uchar &r = pixel[2];
+            uchar &a= pixel[3];
+            Double dx=(x-hw)*Double(1)/hw,dy=(y-hh)*Double(1)/hh;
+            Double v=Double::FromDouble(perlin.octave2D_01(double(dx+ox),double(dy+oy),4));
+            Double fac=fade(Double(1)-sqrt(((pow(dx,2)+pow(dy,2)))/2));
+            v*=fac;
+            if(v<Double("0.35"))v=Double::Zero();
+            uchar c=uchar(v*255);
+            b=g=r=a=c;
+        }
+    }
+    return img;
+}
+
+
+//坐标间的相互转化
+int GameWidget::tranX(int DR, int UR)
+{
+    int X;
+    //    X=L*2.0/gen5+U*2.0/gen5;
+    X=(DR+UR)*2/gen5;
+    return X;
+}
+
+int GameWidget::tranY(int DR, int UR)
+{
+    int Y;
+    //    Y=L/gen5-U/gen5;
+    Y=(DR-UR)/gen5;
+    return Y;
+}
+
+int GameWidget::tranDR(int X, int Y)
+{
+    int DR;
+    DR = X * gen5 / Double(4) + Y * gen5 / Double(2);
+    return DR;
+}
+
+int GameWidget::tranUR(int X, int Y)
+{
+    int UR;
+    UR=X*gen5/Double(4)-Y*gen5/Double(2);
+    return UR;
+}
+//根据当前对象插入drawlist
+void GameWidget::insert(Coordinate *p, std::vector<Coordinate *> *drawlist)
+{
+       drawlist->push_back(p);
+}
+
+//绘制内存图
+void GameWidget::drawmemory(int X, int Y,  ImageResource&res, int globalNum)
+{
+    for(int i=0;i<res.pix.width();i++)
+    {
+        for(int j=0;j<res.pix.height();j++)
+        {
+            int mx,my;
+            mx=i+X;
+            my=j+Y;
+
+            if(mx>=0&&my>=0&&mx<GAMEWIDGET_WIDTH&&my<GAMEWIDGET_HEIGHT)//
+            {
+                if(res.memorymap.getMemoryMap(i,j)!=0)
+                {
+                    mainwidget->memorymap[mx/4][my/4]=globalNum;
+                    mainwidget->editorHitMap[mx/4][my/4]=1;
+                }
+            }
+        }
+    }
+}
+
+//清除内存图
+void GameWidget::emptymemorymap()
+{
+    for(int i=0;i<MEMORYROW;i++)
+    {
+        for(int j=0;j<MEMORYCOLUMN;j++)
+        {
+            mainwidget->memorymap[i][j]=0;
+            mainwidget->editorHitMap[i][j]=0;
+        }
+    }
+}
+
+void GameWidget::AddEdge(Double dr, Double ur, Double w, Double h,QColor color)
+{
+    EdgeQueue.push(tuple<Double,Double,Double,Double,QColor>{dr,ur,w,h,color});
+}
+
+void GameWidget::AddLine(Double dr0, Double ur0, Double dr1, Double ur1,QColor color)
+{
+    LineQueue.push(tuple<Double,Double,Double,Double,QColor>{dr0,ur0,dr1,ur1,color});
+}
+
+//地图移动
+void GameWidget::movemap()
+{
+    //此处采用相对坐标，只相对于当前窗口 所以在纵向数据判断处 应该加上的是下窗口的大小
+    int x=this->mapFromGlobal(QCursor().pos()).x();
+    int y=this->mapFromGlobal(QCursor().pos()).y();
+    if(BlockDR+22<0)
+    {
+        BlockDR++;
+    }
+    if(BlockUR<0)
+    {
+        BlockUR++;
+    }
+    if(BlockDR+GAMEWIDGET_MIDBLOCKL>MAP_L-1)
+    {
+        BlockDR--;
+    }
+    if(BlockUR+GAMEWIDGET_MIDBLOCKU>MAP_U-1)
+    {
+        BlockUR--;
+    }
+    if(x<2)
+    {
+        BlockDR--;
+        BlockUR--;
+    }
+    if(x>GAME_WIDTH-20)
+    {
+        BlockDR++;
+        BlockUR++;
+    }
+    if(y<-44)
+    {
+        BlockUR++;
+        BlockDR--;
+    }
+    if(y>GAME_HEIGHT-50-45)//此处先用常数 其中45代表上边框的宽
+    {
+        BlockUR--;
+        BlockDR++;
+    }
+    if(x<2&&y<-44)
+    {
+        BlockDR++;
+    }
+    if(x<-44&&y>GAME_HEIGHT-50-45)
+    {
+        BlockUR++;
+    }
+    if(x>GAME_WIDTH-20&&y<-44)
+    {
+        BlockUR--;
+    }
+    if(x>GAME_WIDTH-20&&y>GAME_HEIGHT-50-45)
+    {
+        BlockDR--;
+    }
+    DR=(BlockDR+Double("0.5"))*16*gen5;
+    UR=(BlockUR+Double("0.5"))*16*gen5;
+}
+
+void GameWidget::UpdateData()
+{
+
+}
+
+void GameWidget::setBuildMode(int buildMode)
+{
+    this->buildMode = buildMode;
+}
