@@ -49,8 +49,6 @@ struct Pos
     int dr = -1, ur = -1;
     Pos() = default;
     Pos(int a, int b) : dr(a), ur(b) {}
-
-    bool operator<(const Pos& b) const { return dr != b.dr ? dr < b.dr : ur < b.ur; }
 };
 
 struct Wave  // bfs 的参数
@@ -218,10 +216,15 @@ class Mgr : public UsrAI
 
     std::multiset<std::pair<int, int>> builds;  // 等待建造队列, pair<priority, buildingType>
 
-    std::set<int> builders;
-    int constructType = -1;
-    Pos constructSite = {-1, -1};
-    int constructSN = -1;  // 地基SN, 出现前为 -1
+    struct BuildSite
+    {
+        int type = -1;
+        Pos site = {-1, -1};
+        int sn = -1;  // 地基SN, 出现前为 -1
+        std::set<int> workers;
+    };
+    std::vector<BuildSite> sites;
+    bool isBuilder(int sn) const;
 
     std::vector<int> costMap;
     std::vector<long long> sumMap;  // costMap 的二维前缀和
@@ -248,7 +251,7 @@ class Mgr : public UsrAI
     std::vector<unsigned char> bfsUsed;  // bfs 复用(一维, 索引 dr*MAP_U+ur)
     std::vector<Pos> route;              // 逐格的路径, 不含起点
     int routeAt = 0;                     // 还没走到的第一格
-    int routeSent = -1;                  // 上次下令去的那格在route里的下标
+    int routeSent = -1;                  // 上次下令去的那格的一维索引 dr*MAP_U+ur, -1 表示尚未发命令
     bool routeFlee = false;              // 当前route是逃跑路线还是探图路线
 
     // 每轴 MAP_L / SCOUT_VIEW + 1 个点, 下标 idx = i * 每轴点数 + j 对应 Pos(i, j) * SCOUT_VIEW
@@ -278,7 +281,6 @@ class Mgr : public UsrAI
 
     void buildRoute(const Pos& goal);
     bool routeSafe() const;                        // 剩下的格子还安全
-    bool routeWalkable() const;                    // 剩下的格子还走得通
     bool followRoute(const Pos& here, bool idle);  // 沿route推进一段, 走完或走不动返回false
 
     bool evade(const Pos& here, bool idle);  // 站在威胁里就往最近的安全格跑; 返回真表示这帧不探图
@@ -300,25 +302,39 @@ class Mgr : public UsrAI
     void runProduction();
     int queuedProd(int action) const;
 
-    std::set<int> doneTech;
+    std::unordered_set<int> doneTech;
 
     int idleHost(int buildingType, const std::set<int>& busy) const;  // 这类里空着的一栋, busy 是本帧已用掉的
 
+    /* 动态经济与产线 */
+    static const int dt = 60 * 25; // 每隔此帧数快照一次库存
+    Stock prevStock;
+    int lastSnapFrame = -100;
+    bool PhaseChanged = false;
+    int poolPop[3] = {0, 0, 0};  // [FOOD, WOOD, STONE]
+
+    Stock computeDemand();
+    void rateOf(double out[2]) const;
+    void rebalancePop(int population, const Stock& need);
+
     /* 军队应战 */
     void defence();  // 处理来袭波次, 置 inCombat
-    bool attack();   // 全军出击, 我咬死你
+    void attack();   // 全军出击, 我咬死你
     void killLions();
     void clearRoad();
 
-    bool allIn = false;
+    bool armyAllIn = false;
+    bool priestAllIn = false;
     Pos final = {-1, -1};
     Pos watchPoint = {-1, -1};
+    bool been = false;
 
     std::set<int> lionCrew;  // 正在打狮子的人
     std::set<int> fixCrew;   // 正在修箭塔的人
 
     bool inCombat = false;      // 本帧祭司不探图
     std::vector<int> hostiles;  // 本帧要处理的敌人SN, 升序
+    std::vector<int> towerAtk;
 
     int priestTarget = -1;  // 祭司正在转换的敌人SN
     int siegeSN = -1;
@@ -368,15 +384,21 @@ class Mgr : public UsrAI
     int buildStoneCost(int type) const;
     bool canPlace(int dr, int ur, int size) const;
 
-    std::vector<int> _unit, _building;  // 计数预处理
+    std::vector<int> _unit, _building, __building;  // 计数预处理
     int cntUnit(int type) { return _unit[type + 1]; }
-    int cntBuilding(int type) { return _building[type]; }
+    int cntBuilding(int type, bool doneOnly = false) { if (!doneOnly) return _building[type]; else return __building[type]; }
     std::unordered_map<int, std::vector<int>> buildingsByType;  // 建筑类型 -> SN 列表
 
     void sendAction(int workerSN, int targetSN);  // 发布命令
 
     int destroyCnt = -1;
     void destroyLater();
+
+    static double len(const Pos& p) { return std::sqrt(p.dr * p.dr + p.ur * p.ur); }
+    static double dot(const Pos& a, const Pos& b) { return a.dr * b.dr + a.ur * b.ur; }
+    static double angle(const Pos& a, const Pos& b) { return std::acos(dot(a, b) / len(a) / len(b)) * 180 / 3.14159265358979323846; }
+
+    bool techAvailable(int action);
 
    public:
     Mgr() = default;
