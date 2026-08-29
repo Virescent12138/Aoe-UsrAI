@@ -50,10 +50,6 @@ const int SCOUT_COOLDOWN = 375;
 const int SCOUT_HOME_STAY = 25 * 90;
 const int SCOUT_WAVE[3] = {25 * 240, 25 * 540, 25 * 840};
 
-const int SC_EXPLORE = 0;
-const int SC_GOHOME = 1;
-const int SC_HOME = 2;
-
 const int BUILD_CREW = 2;  // 一个工地派几个人
 const int LION_CREW = 1;   // 打一只狮子派几个人
 
@@ -1256,6 +1252,15 @@ bool Mgr::techAvailable(int action)
     }
 }
 
+bool Mgr::buildAvailable(int type)
+{
+    switch (type)
+    {
+    case BUILDING_FARM : return cntBuilding(BUILDING_MARKET, true);
+    default: return true;
+    }
+}
+
 bool Mgr::walkable(int dr, int ur) const
 {
     if (dr < 0 || ur < 0 || dr >= MAP_L || ur >= MAP_U) return false;
@@ -1387,7 +1392,7 @@ bool Mgr::nearestStand(const Pos& c, int r, Pos& out) const
     for (int i = max(0, c.dr - r); i <= min(MAP_L - 1, c.dr + r); i++)
         for (int j = max(0, c.ur - r); j <= min(MAP_U - 1, c.ur + r); j++)
         {
-            if (scoutDist[i * MAP_U + j] < 0) continue;
+            if (scoutDist[i * MAP_U + j] < 0 || !walkable(i, j)) continue;
             const double d = disSq({i, j}, c);
             if (out.dr >= 0 && d >= best) continue;
             best = d;
@@ -1412,7 +1417,7 @@ int Mgr::pickWaypoint(Pos& stand) const
             if (enemyCorner(w.dr, w.ur)) continue;
 
             Pos st;
-            if (!nearestStand(w, 3, st)) continue;  // 这一帧到不了
+            if (!nearestStand(w, 5, st)) continue;  // 这一帧到不了
 
             if (wpGain(st) < SCOUT_MIN_GAIN) continue;
 
@@ -1425,43 +1430,43 @@ int Mgr::pickWaypoint(Pos& stand) const
     return bestIdx;
 }
 
-int Mgr::homeETA(const Pos& here, Pos& home) const
+int Mgr::homeETA(const Pos& here)
 {
-    Pos anchor = basePos;
-    double bestFar = -1;
-    for (const auto& it : buildings)
+    if (anchor.dr == -1 || gameFrame - lastAnchorChanged > 250)
     {
-        if (it.second->Type != BUILDING_ARROWTOWER) continue;
-        const Pos tp{it.second->BlockDR, it.second->BlockUR};
-        const double d = disSq(tp, basePos);
-        if (d > bestFar)
+        double bestFar = -1;
+        for (const auto& it : buildings)
         {
-            bestFar = d;
-            anchor = tp;
+            if (it.second->Type != BUILDING_ARROWTOWER) continue;
+            const Pos tp{it.second->BlockDR, it.second->BlockUR};
+            const double d = disSq(tp, basePos);
+            if (d > bestFar)
+            {
+                bestFar = d;
+                anchor = tp;
+            }
         }
+        if (anchor.dr == -1) anchor = basePos;
     }
 
     if (nearestStand(anchor, 4, home)) return scoutDist[home.dr * MAP_U + home.ur] * 25;
-
-    home = {-1, -1};
     return max(abs(here.dr - anchor.dr), abs(here.ur - anchor.ur)) * 25;
 }
 
-int Mgr::scoutState(int eta) const
+bool Mgr::isExplore(int eta) const
 {
     for (int i = 0; i < 3; i++)
     {
-        if (gameFrame >= SCOUT_WAVE[i] && gameFrame <= SCOUT_WAVE[i] + SCOUT_HOME_STAY) return SC_HOME;
-        if (gameFrame < SCOUT_WAVE[i]) return gameFrame + eta >= SCOUT_WAVE[i] ? SC_GOHOME : SC_EXPLORE;
+        if (gameFrame >= SCOUT_WAVE[i] && gameFrame <= SCOUT_WAVE[i] + SCOUT_HOME_STAY) return false;
+        if (gameFrame < SCOUT_WAVE[i]) return gameFrame + eta >= SCOUT_WAVE[i] ? false : true;
     }
-    return SC_EXPLORE;
+    return false;
 }
 
 void Mgr::buildRoute(const Pos& goal)
 {
     route.clear();
     routeAt = 0;
-    routeSent = -1;
     routeFlee = false;
     if (goal.dr < 0 || scoutDist[goal.dr * MAP_U + goal.ur] < 0) return;
 
@@ -1542,7 +1547,9 @@ bool Mgr::evade(const Pos& here, bool idle)
 
     if (routeFlee && route.size())
     {
-        if (routeSafe() && followRoute(here, idle)) return true;
+        const Pos& tail = route.back();
+        const bool goalOk = walkable(tail.dr, tail.ur) && threatAt(tail.dr, tail.ur) <= 0;
+        if (goalOk && followRoute(here, idle)) return true;
         route.clear();
     }
 
@@ -1558,20 +1565,12 @@ bool Mgr::evade(const Pos& here, bool idle)
 
 void Mgr::scout()
 {
-    if (priestAllIn)
-    {
-        goalWp = -1;
-        goalStand = {-1, -1};
-        route.clear();
-        lastMoveFrame = gameFrame;
-        homeBound = false;
-        return;
-    }
+    if (priestAllIn) return;
 
     const tagArmy& u = *army(scoutSN);
     const Pos here = {u.BlockDR, u.BlockUR};
+    const FloatPos Fhere = {u.DR, u.UR};
     const bool idle = u.NowState == HUMAN_STATE_IDLE;
-    const int cellNow = here.dr * MAP_U + here.ur;
     const int wp = MAP_L / SCOUT_VIEW + 1;
     if (wpCooldown.empty())
     {
@@ -1581,57 +1580,57 @@ void Mgr::scout()
 
     if (evade(here, idle)) return;
 
-    if (cellNow != lastCell)
+    if (gameFrame - lastRecordFrame >= SCOUT_STUCK && dis(Fhere, lastPos) >= BLOCKSIDELENGTH)
     {
-        lastCell = cellNow;
-        lastMoveFrame = gameFrame;
+        lastPos = Fhere;
+        lastRecordFrame = gameFrame;
     }
-    else if (route.size() && gameFrame - lastMoveFrame > SCOUT_STUCK)
+    else if (route.size() && gameFrame - lastRecordFrame >= SCOUT_STUCK)
     {
         if (goalWp >= 0) wpCooldown[goalWp] = gameFrame + SCOUT_COOLDOWN;
         goalWp = -1;
         goalStand = {-1, -1};
         route.clear();
-        lastMoveFrame = gameFrame;
+        lastPos = Fhere;
+        lastRecordFrame = gameFrame;
     }
 
     floodThreat(here, true);
 
-    Pos home;
-    const bool urgent = scoutState(homeETA(here, home)) != SC_EXPLORE;
-    if (urgent && !homeBound)
+    if (!isExplore(homeETA(here)))
     {
-        homeBound = true;
-        goalWp = -1;
-    }
-    else if (!urgent && homeBound && home.dr >= 0 && here.dr == home.dr && here.ur == home.ur)
-    {
-        homeBound = false;
-        goalWp = -1;
-    }
-
-    if (homeBound && home.dr < 0) return;
-
-    if (homeBound) goalStand = home;
-    else
-    {
-        buildUnknown();
-
-        if (goalWp >= 0)
+        if (!arrived && dis(Fhere, home) < 5 * BLOCKSIDELENGTH) arrived = true;
+        if (arrived)
         {
-            const bool arrived = here.dr == goalStand.dr && here.ur == goalStand.ur;
-            const bool ok = scoutDist[goalStand.dr * MAP_U + goalStand.ur] >= 0 && wpGain(goalStand) >= SCOUT_MIN_GAIN;
-            if (arrived) wpDone[goalWp] = true;
-            if (arrived || !ok) goalWp = -1;
+            goalWp = -1;
+            goalStand = {-1, -1};
+            route.clear();
+            return;
         }
-
-        if (goalWp < 0 && (goalWp = pickWaypoint(goalStand)) < 0) return;
+        goalWp = -1;
+        goalStand = home;
+        if (route.empty() || route.back().dr != home.dr || route.back().ur != home.ur) buildRoute(home);
+        followRoute(here, idle);
+        return;
     }
 
-    if (here.dr == goalStand.dr && here.ur == goalStand.ur) return;
+    arrived = false;
+    buildUnknown();
 
-    // 丢掉旧路线
-    if (route.size() && (route.back().dr != goalStand.dr || route.back().ur != goalStand.ur)) route.clear();
+    if (goalWp >= 0)
+    {
+        const bool arrived = dis(Fhere, FloatPos(goalStand)) <= 2 * BLOCKSIDELENGTH;
+        const bool ok = scoutDist[goalStand.dr * MAP_U + goalStand.ur] >= 0 && wpGain(goalStand) >= SCOUT_MIN_GAIN;
+        if (arrived) wpDone[goalWp] = true;
+        if (arrived || !ok)
+        {
+            goalWp = -1;
+            goalStand = {-1, -1};
+            route.clear();
+        }
+    }
+
+    if (goalWp < 0 && (goalWp = pickWaypoint(goalStand)) < 0) return;
 
     if (route.size())
     {
@@ -2414,6 +2413,7 @@ int Mgr::queuedBuild(int type) const
 
 void Mgr::wantBuilding(int buildingType, int total, int priority)
 {
+    if (!buildAvailable(buildingType)) return;
     int diff = total - cntBuilding(buildingType) - queuedBuild(buildingType);
     for (; diff > 0; diff--) builds.insert({priority, buildingType});
 }

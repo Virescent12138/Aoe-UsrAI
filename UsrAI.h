@@ -260,10 +260,13 @@ class Mgr : public UsrAI
     std::vector<bool> wpDone;     // 已经站到过的路径点
     int goalWp = -1;              // 目标路径点下标, -1 表示还没选
     Pos goalStand = {-1, -1};     // 探图时是goalWp, 回家时是基地旁
-    bool homeBound = false;       // 正在为波次回家
+    bool arrived = false;
+    Pos anchor;
+    Pos home;
+    int lastAnchorChanged = 0;
 
-    int lastCell = -1;      // 上次记录的祭司所在格
-    int lastMoveFrame = 0;  // 上次换格的帧号
+    FloatPos lastPos = {-1, -1};
+    int lastRecordFrame = 0;
 
     void scout();
 
@@ -276,8 +279,8 @@ class Mgr : public UsrAI
     int wpGain(const Pos& c) const;                          // c 为圆心半径 SCOUT_VIEW 范围内的未知格数
     bool nearestStand(const Pos& c, int r, Pos& out) const;  // c 附近 r 格内最近的可达格
     int pickWaypoint(Pos& stand) const;                      // 最近的还有收益的路径点, 返回其下标
-    int homeETA(const Pos& here, Pos& home) const;           // 回家还要几帧
-    int scoutState(int eta) const;
+    int homeETA(const Pos& here);                            // 回家还要几帧
+    bool isExplore(int eta) const;
 
     void buildRoute(const Pos& goal);
     bool routeSafe() const;                        // 剩下的格子还安全
@@ -307,7 +310,7 @@ class Mgr : public UsrAI
     int idleHost(int buildingType, const std::set<int>& busy) const;  // 这类里空着的一栋, busy 是本帧已用掉的
 
     /* 动态经济与产线 */
-    static const int dt = 60 * 25; // 每隔此帧数快照一次库存
+    static const int dt = 60 * 25;  // 每隔此帧数快照一次库存
     Stock prevStock;
     int lastSnapFrame = -100;
     bool PhaseChanged = false;
@@ -386,7 +389,11 @@ class Mgr : public UsrAI
 
     std::vector<int> _unit, _building, __building;  // 计数预处理
     int cntUnit(int type) { return _unit[type + 1]; }
-    int cntBuilding(int type, bool doneOnly = false) { if (!doneOnly) return _building[type]; else return __building[type]; }
+    int cntBuilding(int type, bool doneOnly = false)
+    {
+        if (!doneOnly) return _building[type];
+        else return __building[type];
+    }
     std::unordered_map<int, std::vector<int>> buildingsByType;  // 建筑类型 -> SN 列表
 
     void sendAction(int workerSN, int targetSN);  // 发布命令
@@ -396,9 +403,11 @@ class Mgr : public UsrAI
 
     static double len(const Pos& p) { return std::sqrt(p.dr * p.dr + p.ur * p.ur); }
     static double dot(const Pos& a, const Pos& b) { return a.dr * b.dr + a.ur * b.ur; }
-    static double angle(const Pos& a, const Pos& b) { return std::acos(dot(a, b) / len(a) / len(b)) * 180 / 3.14159265358979323846; }
+    static double angle(const Pos& a, const Pos& b)
+    { return std::acos(dot(a, b) / len(a) / len(b)) * 180 / 3.14159265358979323846; }
 
     bool techAvailable(int action);
+    bool buildAvailable(int type);
 
    public:
     Mgr() = default;
