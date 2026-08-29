@@ -57,7 +57,7 @@ const int FIX_CREW = 2;       // 修箭塔派几个人
 const int PRIEST_MARGIN = 2;  // 祭司站位比敌人射程多留几格
 
 const int ARMY_ALL_IN = 25 * 60 * 16;
-const int PRIEST_ALL_IN = 25 * 60 * 18;
+const int PRIEST_ALL_IN = 25 * 60 * 18.5;
 
 int STOCK_MAX = 2;    // 最多几个仓库
 int LION_KEEP = 4;    // 狮子视野3
@@ -167,9 +167,14 @@ int Mgr::nearestOf(const std::vector<int>& cand, const FloatPos& at) const
     return best;
 }
 
-int Mgr::takeNearestFree(const FloatPos& at, bool allowSteal)
+int Mgr::takeNearest(const FloatPos& at, bool allowSteal)
 {
-    int best = nearestOf(freeFarmers, at);
+    std::vector<int> pool;
+    pool.reserve(freeFarmers.size());
+    for (int sn : freeFarmers)
+        if (!claimedThisFrame.count(sn)) pool.push_back(sn);
+
+    int best = nearestOf(pool, at);
     if (best >= 0)
     {
         auto it = std::find(freeFarmers.begin(), freeFarmers.end(), best);
@@ -178,53 +183,54 @@ int Mgr::takeNearestFree(const FloatPos& at, bool allowSteal)
             *it = freeFarmers.back();
             freeFarmers.pop_back();
         }
+        claimedThisFrame.insert(best);
         return best;
     }
     if (!allowSteal) return -1;
 
-    HuntSite* from = nullptr;
-    for (auto& it : huntByID)
-        if (it.second->staff.size() && (!from || it.second->staff.size() > from->staff.size())) from = it.second;
-
-    if (from)
+    std::vector<int> cand;
+    for (const auto& it : farmers)
     {
-        best = nearestOf(from->staff, at);
-        if (best >= 0)
+        const auto& f = *(it.second);
+        if (workerToFarm.count(f.SN)) continue;
+        if (claimedThisFrame.count(f.SN)) continue;
+
+        cand.push_back(f.SN);
+    }
+
+    best = nearestOf(cand, at);
+    if (best < 0) return -1;
+
+    // 解绑该村民在所有持久集合里的登记, 防止 sn 同时属于多个岗位
+    auto sh = staffHunt.find(best);
+    if (sh != staffHunt.end())
+    {
+        auto hb = huntByID.find(sh->second);
+        if (hb != huntByID.end())
         {
-            auto& v = from->staff;
-            auto it = std::find(v.begin(), v.end(), best);
-            if (it != v.end())
+            auto& v = hb->second->staff;
+            auto vit = std::find(v.begin(), v.end(), best);
+            if (vit != v.end())
             {
-                *it = v.back();
+                *vit = v.back();
                 v.pop_back();
             }
-            staffHunt.erase(best);
-            return best;
         }
+        staffHunt.erase(sh);
     }
-
-    for (int k = RK_COUNT - 1; k >= 0; k--)
-    {
-        std::vector<int> _crew;
-        for (const GatherSpot& s : pools[k].spots)
-        {
-            auto it = workerOfSpot.find(s.sn);
-            if (it != workerOfSpot.end()) _crew.push_back(it->second);
-        }
-        best = nearestOf(_crew, at);
-        if (best < 0) continue;
-
-        dropSpot(best, false);
-        return best;
-    }
-    return -1;
+    dropSpot(best, false);
+    for (BuildSite& s : sites) s.workers.erase(best);
+    lionCrew.erase(best);
+    fixCrew.erase(best);
+    claimedThisFrame.insert(best);
+    return best;
 }
 
 void Mgr::assign(int x, HuntSite& site)
 {
     while (x-- > 0)
     {
-        const int sn = takeNearestFree(site.center, false);
+        const int sn = takeNearest(site.center, false);
         if (sn < 0) return;
         site.staff.push_back(sn);
         staffHunt[sn] = site.id;
@@ -360,6 +366,7 @@ void Mgr::makeFrame(const tagInfo& info)
     enemyArmies.clear();
     enemyBuildings.clear();
     freeFarmers.clear();
+    claimedThisFrame.clear();
     _unit.clear();
     _building.clear();
     __building.clear();
@@ -686,7 +693,7 @@ Pos Mgr::findSpot(int type)
     for (const auto& it : resources)
     {
         const tagResource* r = it.second;
-        if (r->Type == RESOURCE_GAZELLE && r->Blood > 0) continue;  // 活羚羊会跑, 不占地(同 makeFrame)
+        if (r->Type == RESOURCE_GAZELLE && r->Blood > 0) continue;
 
         const int len = resourceSize(r->Type);
         int dr, ur;
@@ -714,11 +721,11 @@ Pos Mgr::findSpot(int type)
             {
                 if (it.second->Type == BUILDING_GRANARY)
                     bfs(costMap, {it.second->BlockDR, it.second->BlockUR}, buildingSize(BUILDING_GRANARY),
-                        Wave(PLACE_BAND_BONUS).band(1, 4));
+                        Wave(PLACE_BAND_BONUS).band(2, 5));
 
                 if (it.second->Type == BUILDING_CENTER)
                     bfs(costMap, {it.second->BlockDR, it.second->BlockUR}, buildingSize(BUILDING_CENTER),
-                        Wave(PLACE_BAND_BONUS).band(2, 4));
+                        Wave(PLACE_BAND_BONUS).band(2, 5));
             }
             break;
 
@@ -738,10 +745,23 @@ Pos Mgr::findSpot(int type)
                     Wave(PLACE_RES_BONUS).upto(4));
             break;
 
-        case BUILDING_ARMYCAMP:  // 和基地保持6-9格的距离
-        case BUILDING_COLLAGE:   // 同上
-            bfs(costMap, basePos, baseLen, Wave(PLACE_BAND_BONUS).band(6, 9));
-            bfs(costMap, basePos, baseLen, Wave(PLACE_BAND_FAIL).upto(5));
+        case BUILDING_ARMYCAMP:
+        case BUILDING_COLLAGE:
+        case BUILDING_RANGE:
+            bfs(costMap, basePos, baseLen, Wave(PLACE_BAND_FAIL).upto(6));
+
+            for (auto& it : buildings)
+                if (it.second->Type == BUILDING_GRANARY)
+                    bfs(costMap, {it.second->BlockDR, it.second->BlockUR}, buildingSize(BUILDING_GRANARY),
+                        Wave(PLACE_BAND_FAIL).upto(5));
+
+            for (const auto& it : farmers)
+            {
+                const auto& f = *(it.second);
+                if (workerToFarm.find(f.SN) != workerToFarm.end()) continue;
+
+                bfs(costMap, {f.BlockDR, f.BlockUR}, 1, Wave(PLACE_BAND_BONUS).upto(4));
+            }
             break;
 
         case BUILDING_HOME:  // 紧靠其他房屋建造(形成大矩形占地), 和基地保持5格的距离
@@ -760,7 +780,7 @@ Pos Mgr::findSpot(int type)
             for (auto& it : buildings)
                 if (it.second->Type == BUILDING_ARROWTOWER)
                     bfs(costMap, {it.second->BlockDR, it.second->BlockUR}, buildingSize(BUILDING_ARROWTOWER),
-                        Wave(PLACE_ADJACENT * 3).upto(8));
+                        Wave(PLACE_ADJACENT * 3).upto(9));
             break;
     }
 
@@ -1214,7 +1234,7 @@ void Mgr::runGather()
 
             if (!workerOfSpot.count(s.sn))
             {
-                const int sn = takeNearestFree(FloatPos(s.stand), false);
+                const int sn = takeNearest(FloatPos(s.stand), false);
                 if (sn < 0) continue;
                 workerOfSpot[s.sn] = sn;
                 spotOfWorker[sn] = s.sn;
@@ -1851,7 +1871,7 @@ void Mgr::fixTower()
 
     while (fixCrew.size() < FIX_CREW)
     {
-        const int sn = takeNearestFree(FloatPos(Pos(tar->BlockDR, tar->BlockUR)), true);
+        const int sn = takeNearest(FloatPos(Pos(tar->BlockDR, tar->BlockUR)), true);
         if (sn < 0) break;
         fixCrew.insert(sn);
     }
@@ -2148,7 +2168,7 @@ void Mgr::killLions()
 
     while (lionCrew.size() < LION_CREW)
     {
-        const int sn = takeNearestFree({tar->DR, tar->UR}, true);
+        const int sn = takeNearest({tar->DR, tar->UR}, true);
         if (sn < 0) break;
         lionCrew.insert(sn);
     }
@@ -2328,7 +2348,7 @@ void Mgr::runBuild()
     {
         while ((int)s.workers.size() < BUILD_CREW)
         {
-            const int sn = takeNearestFree(FloatPos(s.site), true);
+            const int sn = takeNearest(FloatPos(s.site), true);
             if (sn < 0) break;
             s.workers.insert(sn);
         }
@@ -2372,7 +2392,7 @@ void Mgr::runBuild()
             continue;
         }
 
-        const int first = takeNearestFree(FloatPos(spot), true);
+        const int first = takeNearest(FloatPos(spot), true);
         if (first < 0) break;  // 没人建了
 
         BuildSite s;

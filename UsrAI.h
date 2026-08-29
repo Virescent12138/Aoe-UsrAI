@@ -143,6 +143,7 @@ class Mgr : public UsrAI
     std::unordered_set<const tagResource*> lions;
     std::unordered_set<int> ally;
     std::vector<int> freeFarmers;  // 空闲人口
+    std::unordered_set<int> claimedThisFrame;  // 本帧被 takeNearest 认领过的 SN, 防止一帧内反复抢同一人
 
     int gameFrame = 0;
     Stock stock;
@@ -309,7 +310,7 @@ class Mgr : public UsrAI
 
     int idleHost(int buildingType, const std::set<int>& busy) const;  // 这类里空着的一栋, busy 是本帧已用掉的
 
-    /* 动态经济与产线 */
+    /* 动态经济 */
     static const int dt = 60 * 25;  // 每隔此帧数快照一次库存
     Stock prevStock;
     int lastSnapFrame = -100;
@@ -364,7 +365,7 @@ class Mgr : public UsrAI
     const tagResource* resource(int sn) const { return get(resources, sn); }
 
     int nearestOf(const std::vector<int>& cand, const FloatPos& at) const;
-    int takeNearestFree(const FloatPos& at, bool allowSteal);
+    int takeNearest(const FloatPos& at, bool allowSteal);
 
     bool valid(int dr, int ur) const;  // 是否可以建造
 
