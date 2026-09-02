@@ -58,8 +58,8 @@ const int PLACE_IMPOSSIBLE = 10000;  // 不可能值
 const int PLACE_FAILED = 400;        // 之前建造失败过的地基, 按次数累加
 const int PLACE_FAIL_CAP = 4;        // 单一建筑类型在同一位置的失败惩罚上限
 
-const int DEPOT_FAR = 10;            // 实际采集/耕作点离最近存放点超过这么多格才产生智能仓储需求
-const int DEPOT_BENEFIT = 40;        // 每节省一格搬运距离给仓储候选位置的奖励
+const int DEPOT_FAR = 10;      // 实际采集/耕作点离最近存放点超过这么多格才产生智能仓储需求
+const int DEPOT_BENEFIT = 40;  // 每节省一格搬运距离给仓储候选位置的奖励
 
 const int SCOUT_VIEW = 12;                                 // 侦察视野
 const int SCOUT_MIN_GAIN = 8;                              // 至少探明这么多格才有价值
@@ -78,8 +78,6 @@ const int PRIEST_MARGIN = 2;  // 祭司站位比敌人射程多留几格
 // 总攻
 const int ASSAULT_FRAME = 25 * 60 * 23;  // 全军同时抵达集结点的帧号
 const double PATH_FACTOR = 1.35;         // 绕路系数
-const int GO_STRIDE = 5;                 // nextToGo 目标点的采样步长
-const int GO_MIN_GAIN = 8;               // 视野内未知格少于这么多就不值得跑一趟
 const int PRIEST_KEEP = 24;              // 祭司待命点离攻城厂的格数
 
 const int LION_KEEP = 4;    // 狮子视野3
@@ -87,29 +85,31 @@ const int ENEMY_KEEP = 10;  // 离敌方单位
 
 const int FIX_TOWER_UNTIL = 25 * 60 * 15;  // 这之后不再修塔
 const int LION_HUNT_FROM = 25 * 4 * 60;    // 这之前不主动打狮子
+const int CAVALRY_SEARCH_GAP = 3;
 
 // enemyai 进攻相关数据复刻
 const int BELONG_DEF = 40;  // 分隔攻守判据
 const int LURE_HOLD = 2;    // 点名后保护几帧
+const int LURE_CREW = 4;    // 固定执行点名诱敌的村民数量
 
 // 实测经济参数
-const int CARRY_LIMIT = 10;                 // 村民荷载
-const double BASE_RATE_BUSH = 0.5;          // 浆果, 个/秒
-const double BASE_RATE_CORPSE = 1.0;        // 猎物尸体, 个/秒
-const double BASE_RATE_FARM = 0.5;          // 农田, 个/秒
-const double BASE_RATE_GOLD = 1.0;          // 金矿, 个/秒
-const double BASE_RATE_STONE = 1.0;         // 石矿, 个/秒
-const double BASE_RATE_WOOD = 1.0;          // 木材, 个/秒
-const double HUNT_DPS = 5.0;                // 村民对活猎物的每秒伤害
-const int CREW_HUNT = 2;                    // 食物不足且尸体少时派几个人去杀猎物
-const int FARM_PRIORITY = 96;               // 农田在建造队列里的优先级
+const int CARRY_LIMIT = 10;           // 村民荷载
+const double BASE_RATE_BUSH = 0.5;    // 浆果, 个/秒
+const double BASE_RATE_CORPSE = 1.0;  // 猎物尸体, 个/秒
+const double BASE_RATE_FARM = 0.5;    // 农田, 个/秒
+const double BASE_RATE_GOLD = 1.0;    // 金矿, 个/秒
+const double BASE_RATE_STONE = 1.0;   // 石矿, 个/秒
+const double BASE_RATE_WOOD = 1.0;    // 木材, 个/秒
+const double HUNT_DPS = 5.0;          // 村民对活猎物的每秒伤害
+const int CORPSE_GROUP_GAP = 6;       // 肉源附近没有同伴时视为落单, 不分配人手
+const int FARM_PRIORITY = 96;         // 农田在建造队列里的优先级
+const int FARM_MAX = 12;              // 农田数量硬上限, 兜底防止反复补建
 
-// 经济不再追逐瞬时缺口：阶段预设负责长期结构，库存带只调少量机动人口。
-const int ECON_REPLAN = 25 * 15;            // 每 15 秒最多进行一次跨资源换岗
-const int ECON_FLEX_MAX = 4;                // 最多约 20% 人口作为机动人口
-const int ECON_FLEX_PER_RES = 2;            // 单一资源最多额外吸收两个机动工，防止极端分配
-const int ECON_JOB_HOLD = ECON_REPLAN;       // 新岗位至少稳定一个经济周期
-const int DEPOT_MIN_WORKERS = 2;             // 远端真实采集至少两人才值得新建仓储
+const int ECON_REPLAN = 25 * 15;        // 每 15 秒最多进行一次跨资源换岗
+const int ECON_FLEX_MAX = 5;            // 最多约 5 人口作为机动人口
+const int ECON_FLEX_PER_RES = 2;        // 单一资源最多额外吸收两个机动
+const int ECON_JOB_HOLD = ECON_REPLAN;  // 新岗位至少稳定一个经济周期
+const int DEPOT_MIN_WORKERS = 2;        // 远端真实采集至少两人才值得新建仓储
 
 // 基础数据结构
 
@@ -178,24 +178,21 @@ enum ResKind
 };
 
 const int ECON_FARM = RK_COUNT;
-const int ECON_HUNT = RK_COUNT + 1;
-const int ECON_GROUP_COUNT = RK_COUNT + 2;
+const int ECON_GROUP_COUNT = RK_COUNT + 1;
 
 struct EconProfile
 {
-    int weight[4];  // 木 食 石 金：阶段人口分布预设
-    int low[4];     // 低于 low 打开补库状态
-    int high[4];    // 补到 high 才关闭，形成天然滞回
+    int weight[4];  // 木 食 石 金
+    int low[4];     // 低于 low 优先分配
+    int high[4];    // 补到 high 关闭优先
 };
 
-// 库存带按 config 的主要阶段开销设计：升铜 800 食物；三箭塔 450 石头；
-// 学院阶段约 430 木材；军队阶段持续消耗食物和黄金。石头用 120~180 留作维修缓冲。
-const EconProfile ECON_PROFILE[4] = {
-    {{4, 6, 0, 0}, {260, 700, 120,   0}, {450, 900, 180,   0}},
-    {{3, 4, 3, 0}, {180, 220, 350,   0}, {300, 380, 550,   0}},
-    {{5, 5, 0, 0}, {320, 220, 120,   0}, {520, 380, 180,   0}},
-    {{2, 5, 0, 4}, {180, 320, 120, 250}, {320, 550, 180, 450}},
-};
+// 默认人员分配 资源下限 资源上限
+// 顺序: 木 食 石 金
+const EconProfile ECON_PROFILE[4] = {{{4, 6, 0, 0}, {260, 700, 120, 0}, {450, 900, 180, 0}},
+                                     {{3, 4, 3, 0}, {180, 220, 350, 0}, {300, 380, 550, 0}},
+                                     {{5, 5, 0, 0}, {320, 220, 120, 0}, {520, 380, 180, 0}},
+                                     {{2, 5, 0, 4}, {180, 320, 120, 250}, {320, 550, 180, 450}}};
 
 struct GatherSpot
 {
@@ -209,15 +206,6 @@ struct GatherSpot
 struct GatherPool
 {
     std::vector<GatherSpot> spots;  // 按 cost 升序
-    int desired = 0;
-};
-
-struct HuntSite  // 活猎物聚类, 每帧重建
-{
-    int id = -1;
-    FloatPos center = {-1, -1};
-    std::vector<int> members;  // 猎物SN
-    std::vector<int> staff;    // 村民SN
     int desired = 0;
 };
 
@@ -263,9 +251,6 @@ inline double baseGatherRate(ResKind k)
     }
 }
 
-// 基础采集速率是“资源/秒”；dropDis 是浮点坐标距离。
-// HUMAN_SPEED 为“浮点坐标/帧”，游戏 25 帧/秒。
-// 满载周期 = 采满 CARRY_LIMIT + 往返最近存货点。
 inline double transportRate(double baseRate, double dropDis)
 {
     if (baseRate <= EPS) return 0.0;
@@ -274,8 +259,7 @@ inline double transportRate(double baseRate, double dropDis)
     return CARRY_LIMIT / (gatherSec + walkSec);
 }
 
-inline double gatherRate(ResKind k, double dropDis)
-{ return transportRate(baseGatherRate(k), dropDis); }
+inline double gatherRate(ResKind k, double dropDis) { return transportRate(baseGatherRate(k), dropDis); }
 
 template <class T>  // bool -> unsigned char
 class Grid          // 二维压一维的优化内存分布
@@ -313,8 +297,8 @@ class Mgr : public UsrAI
 
     void update(const tagInfo& info);  // 每帧主循环
 
-    // 下文是一些测试中可能不会真的启用的功能
-    bool usePopModel = false;    // 是否销毁多余村民
+    // 一些测试中可能不会真的启用的功能
+    bool usePopModel = false;  // 是否销毁多余村民
 
    private:
     // 每帧信息
@@ -417,19 +401,6 @@ class Mgr : public UsrAI
     double depotCost(const FloatPos& at, const std::vector<FloatPos>& depots) const;
     void dropSpot(int workerSN, bool toFree);  // 解开一条绑定
 
-    // 打猎
-    void huntFrame();  // 聚类重建 + 继承人口 + 清理过期猎物
-    void huntReset();
-    void arrangeHunt();
-    void huntDetach(int sn);
-    void formHunts(const std::vector<const tagResource*>& sor, int threshold);
-    void restoreStaff();
-    void runHunt(HuntSite& site);
-    bool huntable(const tagResource* r) const;
-    HuntSite* huntOf(int siteID);         // 按id查本帧片区
-    void huntAssign(int x, HuntSite& s);  // 指派x名闲置人员到片区
-    void huntFree(int x, HuntSite& s);    // 释放x名人员进闲置队列
-
     // 农田
     void farmFrame();  // 刷新已完工农田列表
     void runFarm();    // 维护绑定关系并下耕地令
@@ -438,9 +409,8 @@ class Mgr : public UsrAI
     // 人口分配
     void econPlan();
     int econPhase() const;
-    void econCommit();  // ideal target -> 带滞回/换岗预算的 committed target
+    void econCommit();  // ideal target -> committed target
     bool jobHeld(int sn, int group) const;
-    double marginalGatherRate(ResKind k, int assigned) const;  // 第 assigned+1 名工人的实际边际效率
 
     GatherPool pools[RK_COUNT];
     std::unordered_map<int, int> spotOfWorker;  // 村民SN -> 资源SN
@@ -448,13 +418,6 @@ class Mgr : public UsrAI
     Grid<unsigned char> standTaken;             // 已被某个资源点占用的落脚格
     std::vector<FloatPos> foodDepots;           // 基地 + 谷仓
     std::vector<FloatPos> resDepots;            // 基地 + 仓库
-
-    int nextSiteID = 0;
-    std::vector<HuntSite> hunts;                  // 按离基地由近及远
-    std::unordered_map<int, HuntSite*> huntByID;  // 片区id -> 本帧片区
-    std::unordered_map<int, int> huntOfSN;        // 猎物SN -> 片区id
-    std::unordered_map<int, int> staffHunt;       // 村民SN -> 片区id
-    std::unordered_map<int, int> huntPrey;        // 片区id -> 正在打的猎物SN
 
     std::vector<int> farmList;      // 已完工农田, 按单人产出降序
     std::vector<double> farmRates;  // 与 farmList 同序
@@ -466,7 +429,8 @@ class Mgr : public UsrAI
 
     int econCommitted[ECON_GROUP_COUNT] = {};
     int econIdeal[ECON_GROUP_COUNT] = {};
-    bool econBoost[4] = {};                   // 木 食 石 金是否处于补库状态
+    bool econBoost[4] = {};  // 木 食 石 金是否处于补库状态
+    int econPop = 0;  // 扣除建造/修塔/打狮子之后可供经济系统调度的人口
     int econLastFrame = -ECON_REPLAN;
     bool econInitialized = false;
     std::unordered_map<int, int> workerJobSince;  // 村民进入当前普通经济岗位的帧号
@@ -475,13 +439,13 @@ class Mgr : public UsrAI
     void buildFrame();                                             // 清空排队, 重算仓库收益图
     void runBuild();                                               // 维护建造
     void wantBuilding(int buildingType, int total, int priority);  // 该类总数补到 total
-    void wantStock(int priority);                                  // 两名以上村民实际在远端采尸体时补仓库
-    void wantGranary(int priority);                                // 第一座保底；之后只响应真实远端浆果/农田需求
+    void wantStock(int priority);                                  // 两名以上村民实际需要时补
+    void wantGranary(int priority);                                // 两名以上村民实际需要时补
 
     void depotWant(ResKind k, std::vector<Pos>& out) const;  // 两名以上真实远端采集工才产生一个仓储锚点
     bool depotCovered(int depotType, const Pos& c) const;    // 已完成/在建仓储是否已覆盖该服务区
     double depotBenefit(int depotType, const Pos& site) const;
-    bool depotRoom(const Pos& c) const;                      // 该点附近放得下一座存放点
+    bool depotRoom(const Pos& c) const;  // 该点附近放得下一座存放点
     int queuedBuild(int type) const;
     bool buildAvailable(int type) const;
     Pos findSpot(int type);
@@ -502,16 +466,16 @@ class Mgr : public UsrAI
     std::vector<BuildSite> sites;
     Grid<int> costMap;
     Grid<unsigned char> placeOk;
-    std::vector<long long> psum;  // costMap 的二维前缀和, 宽 MAP_U + 1
+    std::vector<long long> psum;                     // costMap 的二维前缀和, 宽 MAP_U + 1
     std::unordered_map<long long, int> failedSpots;  // (buildingType, cell) -> fail count
 
     std::vector<Pos> granaryPendings;  // 要采但离谷仓太远的浆果
     std::vector<Pos> stockPendings;    // 要采但离仓库太远的猎物尸体
 
     std::multiset<std::pair<int, int>> prods;  // pair<priority, action>, 从高到低
-    std::unordered_set<int> techOrders;   // 本帧 prods 中哪些 action 是科技
-    std::unordered_set<int> runningTech;  // 已经下令且尚未完成
-    std::unordered_set<int> doneTech;     // 仅在 Project 结束后进入
+    std::unordered_set<int> techOrders;        // 本帧 prods 中哪些 action 是科技
+    std::unordered_set<int> runningTech;       // 已经下令且尚未完成
+    std::unordered_set<int> doneTech;          // 仅在 Project 结束后进入
     int destroyCnt = -1;
 
     // 侦察
@@ -534,27 +498,27 @@ class Mgr : public UsrAI
     void defence();  // 处理来袭波次, 置 combat
     void fixTower();
     void runTower();
+    int defenceSelector(const tagArmy& u) const;
     void runPriest();
     void runArmy();
 
     bool combat = false;        // 本帧祭司不探图
     std::vector<int> hostiles;  // 本帧要处理的敌人SN, 升序
     std::vector<int> towerAtk;  // 本帧要骗索敌的敌人SN, 升序
-    int priestTarget = -1;      // 祭司正在转换的敌人SN
     std::set<int> fixCrew;      // 正在修箭塔的人
 
     // 进攻
-    void offense();                     // 进攻总调度
-    void offenseInit();                 // 定位对角与攻城厂, 刷新集结点; 没定位好返回 false
-    void offenseUpdate();               // 清理死人留下的锁, 刷新 runLure , 更新 tars
-    int siegeDis(const Pos& p) const;   // 到攻城厂的格距, 未定位返回角落运算
-    void runLure();                     // 全员点名, 批量破坏敌方索敌
+    void offense();                    // 进攻总调度
+    void offenseInit();                // 定位对角与攻城厂, 刷新集结点; 没定位好返回 false
+    void offenseUpdate();              // 清理死人留下的锁, 刷新 runLure , 更新 tars
+    int siegeDis(const Pos& p) const;  // 到攻城厂的格距, 未定位返回角落运算
+    void runLure();                    // 固定 4 个村民轮流点名, 破坏敌方索敌
 
-    int assultETA(const tagArmy& u);               // 按自身速度算, 走到集结点还要几帧
-    void DispatchMove();                                 // 按速度错峰出发
-    void nextToGoBuild();                                // 重建未探索目标点表
-    Pos nextToGo(const tagArmy& u, bool occupy = true);  // 最近的未探索目标点
-    int selector(const tagArmy& u);                      // 目标选择器
+    int assultETA(const tagArmy& u);      // 按自身速度算, 走到推进点还要几帧
+    void DispatchMove();                  // 按速度错峰出发
+    void nextToGoBuild();                 // 从敌方基地反向 BFS, 找最近的我方已知可达格
+    Pos nextToGo(const tagArmy& u) const; // 当前稳定推进点
+    int selector(const tagArmy& u);       // 目标选择器
     void runAssult();                                    // 战斗
     void runAtkPriest();                                 // 祭司
     void clearRoad();                                    // 借过一下
@@ -562,19 +526,21 @@ class Mgr : public UsrAI
     Pos corner = {-1, -1};  // 与基地对角的地图角
     int siegeSN = -1;
     Pos siegePos = {-1, -1};
+    bool towersDone = false;
     Grid<unsigned char> clearRoadUsed;
 
-    std::vector<Pos> goList;         // 推进点
-    std::vector<bool> goUsed;        // 推进点使用状态
+    Pos goPoint = {-1, -1};          // 当前总攻推进点
+    bool goPointFrozen = false;      // 错峰出发开始后, 到 ASSAULT_FRAME 前冻结推进点
     std::unordered_set<int> onMove;  // 已经出发的单位
     bool assaultOn = false;          // 全军出击
 
-    std::vector<int> tars; // 敌人SN列表
+    std::vector<int> tars;  // 敌人SN列表
 
     std::vector<int> lureList;
     std::unordered_set<int> lureSeen;
     int lureCursor = 0;                     // 轮转游标
     std::unordered_map<int, int> lureHold;  // 村民 SN -> 保护到哪一帧
+    std::set<int> lureCrew;                 // 固定 4 个执行点名的村民
 
     // 雷霆狮子
     void killLions();
