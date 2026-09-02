@@ -51,13 +51,13 @@ enum
 
 // 可调参数
 
-const int PLACE_BASE = 100;          // 紧贴基地
-const int PLACE_ADJACENT = 80;       // 紧贴其它建筑
-const int PLACE_BONUS = -60;         // 落在该建筑理想距离带内
-const int PLACE_FAILED = 400;        // 之前建造失败过的地基, 按次数累加
-const int PLACE_FAIL_CAP = 4;        // 单一建筑类型在同一位置的失败惩罚上限
+const int PLACE_BASE = 100;     // 紧贴基地
+const int PLACE_ADJACENT = 80;  // 紧贴其它建筑
+const int PLACE_BONUS = -60;    // 落在该建筑理想距离带内
+const int PLACE_FAILED = 400;   // 之前建造失败过的地基, 按次数累加
+const int PLACE_FAIL_CAP = 4;   // 单一建筑类型在同一位置的失败惩罚上限
 
-const int DEPOT_FAR = 10;      // 实际采集/耕作点离最近存放点超过这么多格才产生智能仓储需求
+const int DEPOT_FAR = 10;      // 实际工作点离最近存放点超过这么多格才产生智能仓储需求
 const int DEPOT_BENEFIT = 40;  // 每节省一格搬运距离给仓储候选位置的奖励
 
 const int SCOUT_VIEW = 12;                                 // 侦察视野
@@ -70,25 +70,23 @@ const int SCOUT_WAVE[3] = {25 * 240, 25 * 540, 25 * 840};  // 波次
 
 const int CREW_BUILD = 2;   // 一个工地派几个人
 const int BUILD_WAIT = 25;  // 下了建造令之后, 等地基出现的宽限帧数
-const int CREW_LION = 1;   // 打一只狮子派几个人
-const int CREW_FIX = 2;    // 修箭塔派几个人
+const int CREW_LION = 1;    // 打一只狮子派几个人
+const int CREW_FIX = 2;     // 修箭塔派几个人
 
 // 总攻
-const int ASSAULT_FRAME = 25 * 60 * 23;          // 侦察兵 + 复合弓 + 投石车出动
-const int ASSAULT_MAIN = ASSAULT_FRAME + 25 * 30;  // 23:30 方阵兵和骑兵跟上
-const int RUSH_SCOUT = 2;                        // 只探图不攻击的侦察兵名额
-const int KITE_BOW = 2;                          // 复合弓被贴到几格就后撤
-const int KITE_STONE = 8;                        // 投石车被贴到几格就后撤
-const int KITE_STEP = 2;                         // 一次后撤退几格
+const int ASSAULT_RANGED = 25 * 60 * 23;              // 侦察兵 + 复合弓 + 投石车出动
+const int ASSAULT_MELEE = ASSAULT_RANGED + 25 * 30;   // 30s后方阵兵跟上
+const int ASSAULT_SPECIAL = ASSAULT_MELEE + 25 * 20;  // 20s特种部队
+const int KITE_BOW = 3;                               // 复合弓被贴到几格就后撤
+const int KITE_STONE = 7;                             // 投石车被贴到几格就后撤
+const int KITE_SCOUT = 4;                             // 侦察骑兵被贴到几格就后撤
+const int KITE_STEP = 2;                              // 一次后撤退几格
 
-const int LION_KEEP = 4;        // 狮子视野3
-const int ENEMY_KEEP = 10;      // 敌方单位的警戒圈, 一律按这个值, 不随索敌状态伸缩
-const int WORK_KEEP = 12;       // 敌方单位/建筑这么多格内不采集不盖房
-const int DEF_ALERT = 40;       // 进到这个距离才算来袭波次
-// 箭塔点名范围. 远大于箭塔的真实射程是有意的: 防守时敌人会锁定攻击自己的单位,
-// 箭塔每帧点一个就能把火力吸到自己身上, 祭司才不会被咬. 但也不能一直放到 65 格,
-// 那样探图刚照亮敌营就会把远处的驻军也一起点掉
-const int TOWER_ALERT = 50;
+const int LION_KEEP = 4;     // 狮子视野3
+const int ENEMY_KEEP = 10;   // 敌方单位的警戒圈, 一律按这个值, 不随索敌状态伸缩
+const int WORK_KEEP = 12;    // 敌方单位/建筑这么多格内不采集不盖房
+const int DEF_ALERT = 40;    // 进到这个距离才算来袭波次
+const int TOWER_ALERT = 50;  // 提前点名范围
 
 const int FIX_TOWER_UNTIL = 25 * 60 * 15;  // 这之后不再修塔
 const int LION_HUNT_FROM = 25 * 60 * 20;   // 20 分钟起派一个人清场, 免得狮子干扰后面的战斗
@@ -219,8 +217,8 @@ struct BuildSite
 {
     int type = -1;
     Pos site = {-1, -1};
-    int sn = -1;    // 地基SN, 出现前为 -1
-    int born = 0;   // 下达建造令的帧号, 用来给地基出现留宽限
+    int sn = -1;   // 地基SN, 出现前为 -1
+    int born = 0;  // 下达建造令的帧号, 用来给地基出现留宽限
     std::set<int> workers;
 };
 
@@ -335,7 +333,7 @@ class Mgr : public UsrAI
     void threatBuild();
     void threatStamp(int td, int tu, int r);
     int threatAt(int dr, int ur) const;
-    void dangerBuild();                     // 敌方单位/建筑周围的作业禁区
+    void dangerBuild();  // 敌方单位/建筑周围的作业禁区
     bool dangerAt(int dr, int ur) const;
 
     void moveToCell(int sn, const Pos& p)  // 走到该格中心
@@ -413,7 +411,7 @@ class Mgr : public UsrAI
 
     // 人口分配
     void econPlan();
-    int econPhase();  // 单调不回退
+    int econPhase();    // 单调不回退
     void econCommit();  // ideal target -> committed target
     bool jobHeld(int sn, int group) const;
 
@@ -435,8 +433,8 @@ class Mgr : public UsrAI
     int econCommitted[ECON_GROUP_COUNT] = {};
     int econIdeal[ECON_GROUP_COUNT] = {};
     bool econBoost[4] = {};  // 木 食 石 金是否处于补库状态
-    int econStage = 0;  // 已经达到过的经济阶段, 只增不减
-    int econPop = 0;  // 扣除建造/修塔/打狮子之后可供经济系统调度的人口
+    int econStage = 0;       // 已经达到过的经济阶段, 只增不减
+    int econPop = 0;         // 扣除建造/修塔/打狮子之后可供经济系统调度的人口
     int econLastFrame = -ECON_REPLAN;
     bool econInitialized = false;
     std::unordered_map<int, int> workerJobSince;  // 村民进入当前普通经济岗位的帧号
@@ -519,14 +517,14 @@ class Mgr : public UsrAI
     int siegeDis(const Pos& p) const;  // 到攻城厂的格距, 未定位返回角落运算
     void runLure();                    // 固定 4 个村民轮流点名, 破坏敌方索敌
 
-    void DispatchMove();                  // 按批次放行部队
-    void nextToGoBuild();                 // 从敌方基地反向 BFS, 找最近的我方已知可达格
-    Pos nextToGo(const tagArmy& u) const; // 当前稳定推进点
-    int selector(const tagArmy& u);       // 目标选择器
+    void DispatchMove();                      // 按批次放行部队
+    void nextToGoBuild();                     // 从敌方基地反向 BFS, 找最近的我方已知可达格
+    Pos nextToGo(const tagArmy& u) const;     // 当前稳定推进点
+    int selector(const tagArmy& u);           // 目标选择器
     bool kite(const tagArmy& u, int radius);  // 敌人贴到 radius 格内就沿 nav 退一格
-    void runAssult();                                    // 战斗
-    void runAtkPriest();                                 // 祭司
-    void clearRoad();                                    // 借过一下
+    void runAssult();                         // 战斗
+    void runAtkPriest();                      // 祭司
+    void clearRoad();                         // 借过一下
 
     Pos corner = {-1, -1};  // 与基地对角的地图角
     int siegeSN = -1;
@@ -537,13 +535,11 @@ class Mgr : public UsrAI
 
     Pos goPoint = {-1, -1};           // 当前总攻推进点
     std::unordered_set<int> onMove;   // 已经出发的单位
-    std::unordered_set<int> rushSet;  // 只负责探图和拉仇恨, 不索敌的侦察兵
     bool assaultOn = false;           // 总攻已经开始
 
     std::vector<int> tars;  // 敌人SN列表
 
     std::vector<int> lureList;
-    std::unordered_set<int> lureSeen;
     int lureCursor = 0;      // 轮转游标
     std::set<int> lureCrew;  // 固定 4 个执行点名的村民
 

@@ -16,9 +16,7 @@ static const int dy[8] = {1, 0, -1, 0, 1, -1, -1, 1};
 Mgr mgr;
 
 static long long placeFailKey(int type, int dr, int ur)
-{
-    return ((long long)(type + 1) << 32) | (unsigned int)cellIdx(dr, ur);
-}
+{ return ((long long)(type + 1) << 32) | (unsigned int)cellIdx(dr, ur); }
 
 void UsrAI::processData() { mgr.update(getInfo()); }
 
@@ -565,8 +563,7 @@ void Mgr::dangerBuild()
     auto stamp = [&](int dr, int ur)
     {
         for (int i = max(0, dr - WORK_KEEP); i <= min(MAP_L - 1, dr + WORK_KEEP); i++)
-            for (int j = max(0, ur - WORK_KEEP); j <= min(MAP_U - 1, ur + WORK_KEEP); j++)
-                danger(i, j) = 1;
+            for (int j = max(0, ur - WORK_KEEP); j <= min(MAP_U - 1, ur + WORK_KEEP); j++) danger(i, j) = 1;
     };
 
     for (const auto& it : eArmyMap) stamp(it.second->BlockDR, it.second->BlockUR);
@@ -795,12 +792,10 @@ void Mgr::arrangeGather()
         if (meatOk(it.second)) meats.push_back(it.second);
 
     std::unordered_set<int> grouped;
-    const double meatGapSq =
-        (double)CORPSE_GROUP_GAP * BLOCKSIDELENGTH * CORPSE_GROUP_GAP * BLOCKSIDELENGTH;
+    const double meatGapSq = (double)CORPSE_GROUP_GAP * BLOCKSIDELENGTH * CORPSE_GROUP_GAP * BLOCKSIDELENGTH;
     for (int i = 0; i < (int)meats.size(); i++)
         for (int j = i + 1; j < (int)meats.size(); j++)
-            if (disSq(FloatPos(meats[i]->DR, meats[i]->UR),
-                      FloatPos(meats[j]->DR, meats[j]->UR)) <= meatGapSq)
+            if (disSq(FloatPos(meats[i]->DR, meats[i]->UR), FloatPos(meats[j]->DR, meats[j]->UR)) <= meatGapSq)
             {
                 grouped.insert(meats[i]->SN);
                 grouped.insert(meats[j]->SN);
@@ -820,9 +815,8 @@ void Mgr::arrangeGather()
     {
         const tagResource* r = resource(it->second);
         const bool unsafe = r && workUnsafe(r);
-        const bool gone =
-            !farmer(it->first) || !r || kindOf(r->Type) == RK_COUNT || unsafe ||
-            (kindOf(r->Type) == RK_CORPSE && !meatOk(r));
+        const bool gone = !farmer(it->first) || !r || kindOf(r->Type) == RK_COUNT || unsafe ||
+                          (kindOf(r->Type) == RK_CORPSE && !meatOk(r));
         if (!gone)
         {
             it++;
@@ -942,7 +936,6 @@ void Mgr::dropSpot(int workerSN, bool toFree)
         freeWorker(workerSN);
     }
 }
-
 
 void Mgr::runGather()
 {
@@ -1091,8 +1084,7 @@ void Mgr::econCommit()
     }
 
     // 资源/农田消失
-    for (int k = 0; k < RK_COUNT; k++)
-        econCommitted[k] = min(econCommitted[k], (int)pools[k].spots.size());
+    for (int k = 0; k < RK_COUNT; k++) econCommitted[k] = min(econCommitted[k], (int)pools[k].spots.size());
     econCommitted[ECON_FARM] = min(econCommitted[ECON_FARM], (int)farmList.size());
 
     // 新造出的村民只填补已有目标的空缺
@@ -1188,19 +1180,10 @@ void Mgr::econPlan()
     const int farmCap = (int)farmList.size();
     const int naturalFoodCap = meatCap + bushCap;
 
-    int currentCap[4] = {
-        (int)pools[RK_WOOD].spots.size(),
-        naturalFoodCap + farmCap,
-        (int)pools[RK_STONE].spots.size(),
-        (int)pools[RK_GOLD].spots.size()
-    };
+    int currentCap[4] = {(int)pools[RK_WOOD].spots.size(), naturalFoodCap + farmCap, (int)pools[RK_STONE].spots.size(),
+                         (int)pools[RK_GOLD].spots.size()};
     // 农田可以现建, 所以规划阶段食物不设上限: 差多少由 farmShortage 反推出来
-    int planCap[4] = {
-        currentCap[0],
-        buildAvailable(BUILDING_FARM) ? pop : currentCap[1],
-        currentCap[2],
-        currentCap[3]
-    };
+    int planCap[4] = {currentCap[0], buildAvailable(BUILDING_FARM) ? pop : currentCap[1], currentCap[2], currentCap[3]};
 
     auto addByWeight = [&](int count, int target[4], const int cap[4])
     {
@@ -1273,8 +1256,7 @@ void Mgr::econPlan()
     // pendingFarm 挡住在建期间重复批
     const int pendingFarm =
         buildingCount(BUILDING_FARM) - buildingCount(BUILDING_FARM, true) + queuedBuild(BUILDING_FARM);
-    if (buildAvailable(BUILDING_FARM) && farmShortage > pendingFarm && farmCap + pendingFarm < FARM_MAX)
-        wantFarm = 1;
+    if (buildAvailable(BUILDING_FARM) && farmShortage > pendingFarm && farmCap + pendingFarm < FARM_MAX) wantFarm = 1;
 
     // 等农田的人去砍木头: 农田的瓶颈本来就是木料, 这是个闭环而不是浪费
     const int woodRoom = max(0, currentCap[0] - pools[RK_WOOD].desired);
@@ -1332,23 +1314,17 @@ bool Mgr::buildAvailable(int type) const
     switch (type)
     {
         case BUILDING_RANGE:
-        case BUILDING_STABLE:
-            return buildingCount(BUILDING_ARMYCAMP, true) > 0;
+        case BUILDING_STABLE: return buildingCount(BUILDING_ARMYCAMP, true) > 0;
 
-        case BUILDING_COLLAGE:
-            return buildingCount(BUILDING_STABLE, true) > 0;
+        case BUILDING_COLLAGE: return buildingCount(BUILDING_STABLE, true) > 0;
 
-        case BUILDING_FARM:
-            return buildingCount(BUILDING_MARKET, true) > 0;
+        case BUILDING_FARM: return buildingCount(BUILDING_MARKET, true) > 0;
 
-        case BUILDING_ARROWTOWER:
-            return hasTech(BUILDING_GRANARY_ARROWTOWER);
+        case BUILDING_ARROWTOWER: return hasTech(BUILDING_GRANARY_ARROWTOWER);
 
-        case BUILDING_SIEGE:
-            return false;  // 本局规则禁止建造；投石车只来自祭司转化
+        case BUILDING_SIEGE: return false;  // 本局规则禁止建造；投石车只来自祭司转化
 
-        default:
-            return true;
+        default: return true;
     }
 }
 
@@ -1530,7 +1506,6 @@ Pos Mgr::findSpot(int type)
             }
             break;
 
-
         case BUILDING_ARMYCAMP:
         case BUILDING_COLLAGE:
         case BUILDING_RANGE:
@@ -1558,7 +1533,6 @@ Pos Mgr::findSpot(int type)
             ringAdd(costMap, base, baseLen, PLACE_ADJACENT, 0, 5);
             break;
 
-
         case BUILDING_ARROWTOWER:
             for (const auto& it : buildingMap)
                 if (it.second->Type == BUILDING_ARROWTOWER)
@@ -1566,8 +1540,7 @@ Pos Mgr::findSpot(int type)
                             PLACE_ADJACENT * 3, 0, 9);
             break;
 
-        default:
-            break;  // 谷仓/仓库走通用布局 + 下方智能运输收益，不在 switch 中另设固定环
+        default: break;  // 谷仓/仓库走通用布局 + 下方智能运输收益，不在 switch 中另设固定环
     }
 
     const int area = size * size;
@@ -1824,19 +1797,14 @@ bool Mgr::techAvailable(int action) const
     switch (action)
     {
         case BUILDING_CENTER_UPGRADE:
-            return stage == CIVILIZATION_TOOLAGE &&
-                   buildingCount(BUILDING_MARKET, true) > 0 &&
-                   buildingCount(BUILDING_ARMYCAMP, true) > 0 &&
-                   buildingCount(BUILDING_RANGE, true) > 0;
+            return stage == CIVILIZATION_TOOLAGE && buildingCount(BUILDING_MARKET, true) > 0 &&
+                   buildingCount(BUILDING_ARMYCAMP, true) > 0 && buildingCount(BUILDING_RANGE, true) > 0;
 
-        case BUILDING_MARKET_WHEEL_UPGRADE:
-            return stage == CIVILIZATION_BRONZEAGE;
+        case BUILDING_MARKET_WHEEL_UPGRADE: return stage == CIVILIZATION_BRONZEAGE;
 
-        case BUILDING_RANGE_UPGRADE_COMPOSITE_BOW:
-            return stage == CIVILIZATION_BRONZEAGE;
+        case BUILDING_RANGE_UPGRADE_COMPOSITE_BOW: return stage == CIVILIZATION_BRONZEAGE;
 
-        default:
-            return true;
+        default: return true;
     }
 }
 
@@ -2380,11 +2348,7 @@ int Mgr::defenceSelector(const tagArmy& u) const
 {
     const Pos me = {u.BlockDR, u.BlockUR};
 
-    auto isHostile = [&](int sn)
-    {
-        return enemyArmy(sn) &&
-               std::binary_search(hostiles.begin(), hostiles.end(), sn);
-    };
+    auto isHostile = [&](int sn) { return enemyArmy(sn) && std::binary_search(hostiles.begin(), hostiles.end(), sn); };
 
     auto closer = [&](int a, int b)
     {
@@ -2412,8 +2376,7 @@ int Mgr::defenceSelector(const tagArmy& u) const
 
     if (u.Sort == AT_PRIEST)
     {
-        if (cur && isHostile(cur->SN) && cur->Sort == AT_STONE_THROWER && lockOf(cur->SN) >= 0)
-            return cur->SN;
+        if (cur && isHostile(cur->SN) && cur->Sort == AT_STONE_THROWER && lockOf(cur->SN) >= 0) return cur->SN;
 
         int pick = -1;
         for (int sn : hostiles)
@@ -2454,8 +2417,7 @@ void Mgr::runArmy()
             continue;
         }
 
-        if (enemyArmy(u.WorkObjectSN))
-            moveToCell(u.SN, {u.BlockDR, u.BlockUR});
+        if (enemyArmy(u.WorkObjectSN)) moveToCell(u.SN, {u.BlockDR, u.BlockUR});
     }
 }
 
@@ -2473,8 +2435,7 @@ void Mgr::runPriest()
         return;
     }
 
-    if (enemyArmy(p->WorkObjectSN))
-        moveToCell(priest, {p->BlockDR, p->BlockUR});
+    if (enemyArmy(p->WorkObjectSN)) moveToCell(priest, {p->BlockDR, p->BlockUR});
 }
 
 void Mgr::offenseInit()
@@ -2507,16 +2468,12 @@ void Mgr::offenseUpdate()
         if (!army(*it)) it = onMove.erase(it);
         else ++it;
 
-    for (auto it = rushSet.begin(); it != rushSet.end();)
-        if (!army(*it)) it = rushSet.erase(it);
-        else ++it;
-
     for (const auto& it : eArmyMap)
     {
         const tagArmy& e = *it.second;
         if (siegeDis({e.BlockDR, e.BlockUR}) > BELONG_DEF) continue;
 
-        if (e.Sort != AT_STONE_THROWER && lureSeen.insert(e.SN).second) lureList.push_back(e.SN);
+        if (e.Sort != AT_STONE_THROWER) lureList.push_back(e.SN);
         tars.push_back(e.SN);
     }
 
@@ -2524,34 +2481,23 @@ void Mgr::offenseUpdate()
         if (it.second->Type != BUILDING_SIEGE) tars.push_back(it.second->SN);
 }
 
-// 分三批放行. 侦察兵和远程先走: 侦察兵负责把图探开并把敌方仇恨拉住,
-// 复合弓和投石车借着这段窗口在安全距离上先架起来; 近战 20 秒后再压上去
 void Mgr::DispatchMove()
 {
-    if (gameFrame < ASSAULT_FRAME) return;
+    if (gameFrame < ASSAULT_RANGED) return;
     assaultOn = true;
-
-    if ((int)rushSet.size() < RUSH_SCOUT)
-        for (int sn : armySNs)
-        {
-            const tagArmy* a = army(sn);
-            if (!a || a->Sort != AT_SCOUT || onMove.count(sn)) continue;
-
-            rushSet.insert(sn);
-            onMove.insert(sn);
-            if ((int)rushSet.size() >= RUSH_SCOUT) break;
-        }
 
     for (const auto& it : armyMap)
     {
         const tagArmy& u = *it.second;
         if (u.SN == priest || onMove.count(u.SN)) continue;
-        if (u.Sort == AT_SCOUT) continue;  // 侦察兵只按上面的名额出动
 
-        const bool ranged = u.Sort == AT_COMPOSITE_BOWMAN || u.Sort == AT_STONE_THROWER;
-        if (!ranged && gameFrame < ASSAULT_MAIN) continue;
+        const bool ranged = u.Sort == AT_COMPOSITE_BOWMAN || u.Sort == AT_STONE_THROWER || u.Sort == AT_SCOUT;
+        const bool special = u.Sort == AT_CAVALRY;
+        const bool melee = !ranged && !special;
 
-        onMove.insert(u.SN);
+        if (ranged && gameFrame >= ASSAULT_RANGED) onMove.insert(u.SN);
+        if (melee && gameFrame >= ASSAULT_MELEE) onMove.insert(u.SN);
+        if (special && gameFrame >= ASSAULT_SPECIAL) onMove.insert(u.SN);
     }
 }
 
@@ -2560,7 +2506,6 @@ void Mgr::nextToGoBuild()
     goPoint = {-1, -1};
     if (corner.dr < 0 || base.dr < 0) return;
 
-    // 已看见敌方基地时从基地占地反向 BFS；否则从敌方出生角近似。
     std::vector<Pos> sources;
     for (const auto& it : eBuildingMap)
     {
@@ -2575,7 +2520,6 @@ void Mgr::nextToGoBuild()
     }
     if (sources.empty()) sources.push_back(corner);
 
-    // 反向 BFS：未知格先假定可通；已知格则尊重真实地形和阻挡。
     auto assumedWalkable = [&](int dr, int ur)
     {
         if (!inMap(dr, ur)) return false;
@@ -2592,7 +2536,7 @@ void Mgr::nextToGoBuild()
         const int idx = cellIdx(s.dr, s.ur);
         if (used[idx]) continue;
         used[idx] = 1;
-        q.push(s);  // 敌基地本身即使被建筑占用，也允许作为 BFS 源。
+        q.push(s);
     }
 
     while (!q.empty())
@@ -2606,7 +2550,6 @@ void Mgr::nextToGoBuild()
             const Pos cur = q.front();
             q.pop();
 
-            // nav >= 0：这个格子已经可见，而且从我方基地真实可达。
             if (nav(cur) >= 0)
             {
                 if (best.dr < 0 || nav(cur) < bestNav ||
@@ -2627,8 +2570,7 @@ void Mgr::nextToGoBuild()
                 if (used[idx] || !assumedWalkable(nxt.dr, nxt.ur)) continue;
 
                 if (dx[d] && dy[d] &&
-                    (!assumedWalkable(cur.dr + dx[d], cur.ur) ||
-                     !assumedWalkable(cur.dr, cur.ur + dy[d])))
+                    (!assumedWalkable(cur.dr + dx[d], cur.ur) || !assumedWalkable(cur.dr, cur.ur + dy[d])))
                     continue;
 
                 used[idx] = 1;
@@ -2636,7 +2578,6 @@ void Mgr::nextToGoBuild()
             }
         }
 
-        // 第一层与我方 nav 相交的位置，就是离敌方基地最近的可见真实可达边界。
         if (best.dr >= 0)
         {
             goPoint = best;
@@ -2651,7 +2592,7 @@ Pos Mgr::nextToGo(const tagArmy& u) const
     return goPoint;
 }
 
-int Mgr::selector(const tagArmy& u)
+ int Mgr::selector(const tagArmy& u)
 {
     const int type = u.Sort;
     if (type != AT_CAVALRY && tars.empty()) return -1;
@@ -2676,15 +2617,11 @@ int Mgr::selector(const tagArmy& u)
         return b && b->Type != BUILDING_SIEGE;
     };
 
-    // 已经被 runLure 钓住的敌人: lockOf 返回它咬着的我方村民或箭塔.
-    // 这种敌人不会回头打我们, 打它既安全又不会解开锁, 是最划算的目标
-    auto lured = [&](const int sn) { return lockOf(sn) >= 0; };
+    auto lured = [&](const int sn) { /*return lockOf(sn) >= 0; */ return true;};
 
     auto pickLured = [&](std::vector<int> cand) -> int
     {
-        cand.erase(std::remove_if(cand.begin(), cand.end(),
-                                  [&](const int sn) { return !lured(sn); }),
-                   cand.end());
+        cand.erase(std::remove_if(cand.begin(), cand.end(), [&](const int sn) { return !lured(sn); }), cand.end());
         if (cand.empty()) return -1;
         std::sort(cand.begin(), cand.end(), closer);
         return cand[0];
@@ -2692,72 +2629,66 @@ int Mgr::selector(const tagArmy& u)
 
     switch (type)
     {
-    case AT_PRIEST:
-        if (enemyArmy(u.WorkObjectSN)) return u.WorkObjectSN;
-        else
+        case AT_PRIEST:
+            if (enemyArmy(u.WorkObjectSN)) return u.WorkObjectSN;
+            else
+            {
+                auto cand = tars;
+                cand.erase(std::remove_if(cand.begin(), cand.end(), [&](const int sn) { return enemyBuilding(sn); }),
+                           cand.end());
+                if (cand.empty()) return -1;
+
+                const int l = pickLured(cand);
+                if (l >= 0) return l;
+
+                std::sort(cand.begin(), cand.end(), closer);
+                return cand[0];
+            }
+
+        case AT_CAVALRY:
         {
+            const tagArmy* cur = enemyArmy(u.WorkObjectSN);
+            if (cur && cur->Sort == AT_STONE_THROWER) return u.WorkObjectSN;
+
+            std::vector<int> stoneThrowers;
+            for (const auto& it : eArmyMap)
+                if (it.second->Sort == AT_STONE_THROWER) stoneThrowers.push_back(it.first);
+
+            if (!stoneThrowers.empty())
+            {
+                std::sort(stoneThrowers.begin(), stoneThrowers.end(), closer);
+                return stoneThrowers[0];
+            }
+
+            // 还离推进边界较远时不被普通目标拖住，继续向 goPoint 推进以扩大视野
+            const Pos p = nextToGo(u);
+            if (p.dr >= 0 && dis(p, {u.BlockDR, u.BlockUR}) > CAVALRY_SEARCH_GAP) return -1;
+
+            // 已经推进到前沿仍没找到投石车，再退回原来的普通索敌
+            if (enemyArmy(u.WorkObjectSN)) return u.WorkObjectSN;
             auto cand = tars;
-            cand.erase(std::remove_if(cand.begin(), cand.end(), [&](const int sn){
-                return enemyBuilding(sn);
-            }), cand.end());
-            if (cand.empty()) return -1;
-
-            const int l = pickLured(cand);
-            if (l >= 0) return l;
-
             std::sort(cand.begin(), cand.end(), closer);
+            if (cand.empty()) return -1;
             return cand[0];
         }
 
-    case AT_CAVALRY:
-    {
-        // 骑兵第一职责是寻找并击杀敌投石车；直接看本帧可见敌军，不受 tars 战区过滤限制。
-        const tagArmy* cur = enemyArmy(u.WorkObjectSN);
-        if (cur && cur->Sort == AT_STONE_THROWER) return u.WorkObjectSN;
-
-        std::vector<int> stoneThrowers;
-        for (const auto& it : eArmyMap)
-            if (it.second->Sort == AT_STONE_THROWER) stoneThrowers.push_back(it.first);
-
-        if (!stoneThrowers.empty())
+        default:
         {
-            std::sort(stoneThrowers.begin(), stoneThrowers.end(), closer);
-            return stoneThrowers[0];
+            if (validTar(u.WorkObjectSN) && lured(u.WorkObjectSN)) return u.WorkObjectSN;
+
+            const int l = pickLured(tars);
+            if (l >= 0) return l;
+
+            if (validTar(u.WorkObjectSN)) return u.WorkObjectSN;
+
+            auto cand = tars;
+            std::sort(cand.begin(), cand.end(), closer);
+            if (cand.empty()) return -1;
+            return cand[0];
         }
-
-        // 还离推进边界较远时不被普通目标拖住，继续向 goPoint 推进以扩大视野。
-        const Pos p = nextToGo(u);
-        if (p.dr >= 0 && dis(p, {u.BlockDR, u.BlockUR}) > CAVALRY_SEARCH_GAP) return -1;
-
-        // 已经推进到前沿仍没找到投石车，再退回原来的普通索敌。
-        if (enemyArmy(u.WorkObjectSN)) return u.WorkObjectSN;
-        auto cand = tars;
-        std::sort(cand.begin(), cand.end(), closer);
-        if (cand.empty()) return -1;
-        return cand[0];
-    }
-
-    default:
-    {
-        // 骑兵以外一律先打被钓住的. 我方大量单位各自索敌会把敌人从村民身上拉回来,
-        // lure 也就白做了; 优先咬住已经无效化的那批, 才能让点名真正生效
-        if (validTar(u.WorkObjectSN) && lured(u.WorkObjectSN)) return u.WorkObjectSN;
-
-        const int l = pickLured(tars);
-        if (l >= 0) return l;
-
-        if (validTar(u.WorkObjectSN)) return u.WorkObjectSN;
-
-        auto cand = tars;
-        std::sort(cand.begin(), cand.end(), closer);
-        if (cand.empty()) return -1;
-        return cand[0];
-    }
     }
 }
 
-// 敌人贴到 radius 格内就沿 nav 退一格. nav 是以我方基地为源的距离场, "更小的 nav"
-// 天然就是回家的方向, 不用另算撤退路径. 正在走的时候不重复下令, 等落地后下一帧再判
 bool Mgr::kite(const tagArmy& u, int radius)
 {
     const Pos here = {u.BlockDR, u.BlockUR};
@@ -2776,10 +2707,8 @@ bool Mgr::kite(const tagArmy& u, int radius)
 
     if (u.NowState == HUMAN_STATE_WALKING) return true;
 
-    if (nav(here) <= 0) return true;  // 已经退到基地或站在不可达格上, 没地方可退
+    if (nav(here) <= 0) return true;
 
-    // 沿 nav 下降方向连退 KITE_STEP 格: 退一格常常还在对方射程里, 一次拉开两格
-    // 才真的脱离接触; 中途某一步没路就退到那一步为止
     Pos cur = here;
     for (int step = 0; step < KITE_STEP; step++)
     {
@@ -2806,8 +2735,6 @@ bool Mgr::kite(const tagArmy& u, int radius)
     return true;
 }
 
-// runLure 是本帧最后一个下令的, 经济系统覆盖不掉, 所以不需要保护帧.
-// 固定 4 个村民, 每帧每人点一个敌人, 游标轮转保证名单里每个都会被点到
 void Mgr::runLure()
 {
     if (!assaultOn || combat || lureList.empty()) return;
@@ -2849,19 +2776,18 @@ void Mgr::runAssult()
 
         const Pos p = nextToGo(u);
 
-        // 侦察兵只探图: 从不索敌, 一路冲向推进点. 它们撞开视野的同时也把敌方守军
-        // 的注意力引过去, 给村民的点名争取时间
-        if (rushSet.count(u.SN))
+        int keep = 0;
+        if (u.Sort == AT_STONE_THROWER) keep = KITE_STONE;
+        if (u.Sort == AT_SCOUT) keep = KITE_SCOUT;
+        if (u.Sort == AT_COMPOSITE_BOWMAN) keep = KITE_BOW;
+
+        if (keep > 0 && kite(u, keep)) continue;
+
+        if (u.Sort == AT_SCOUT)
         {
             if (p.dr >= 0 && u.NowState != HUMAN_STATE_WALKING) moveToCell(u.SN, p);
-            continue;
+            continue; // 不锁敌
         }
-
-        // 远程被贴脸就先拉开再说, 拉开之前不下攻击令
-        const int keep = u.Sort == AT_STONE_THROWER
-                             ? KITE_STONE
-                             : (u.Sort == AT_COMPOSITE_BOWMAN ? KITE_BOW : 0);
-        if (keep > 0 && kite(u, keep)) continue;
 
         const int t = selector(u);
         if (t >= 0 && u.WorkObjectSN == t) continue;
@@ -2871,8 +2797,7 @@ void Mgr::runAssult()
             continue;
         }
 
-        // 什么都没有：继续向当前合法推进点前进。
-        // 骑兵搜索投石车时如果仍挂着旧目标，立即用移动命令打断；已经在向前走则不重复下令。
+        // 什么都没有
         if (p.dr >= 0 && (u.NowState != HUMAN_STATE_WALKING || (u.Sort == AT_CAVALRY && u.WorkObjectSN >= 0)))
             moveToCell(u.SN, p);
     }
@@ -2887,13 +2812,12 @@ void Mgr::runAtkPriest()
 
     if (siegeSN >= 0 && eArmyMap.size() <= 2)
     {
-        if (p->WorkObjectSN != siegeSN)
-            HumanAction(p->SN, siegeSN);
+        if (p->WorkObjectSN != siegeSN) HumanAction(p->SN, siegeSN);
         return;
     }
 
     int threshold = siegeSN < 0 ? 60 : 40;
-    if (siegeDis({p->BlockDR, p->BlockUR}) < threshold) // 尽快撤离
+    if (siegeDis({p->BlockDR, p->BlockUR}) < threshold)  // 尽快撤离
     {
         Pos best = {-1, -1};
         int bestDis = 0;
@@ -2910,9 +2834,6 @@ void Mgr::runAtkPriest()
             }
         if (p->NowState != HUMAN_STATE_WALKING && best.dr >= 0) moveToCell(p->SN, best);
     }
-
-    //const int t = selector(*p);
-    //if (t >= 0 && p->WorkObjectSN != t) HumanAction(p->SN, t);
 }
 
 void Mgr::offense()
@@ -3066,7 +2987,8 @@ void Mgr::strategy()
     {
         const bool wheelDone = hasTech(BUILDING_MARKET_WHEEL_UPGRADE);
         const bool towerTechDone = hasTech(BUILDING_GRANARY_ARROWTOWER);
-        if (!towersDone && buildingCount(BUILDING_ARROWTOWER, true) >= 3) towersDone = true;  // 箭塔用一下就过了, 拆了不补
+        if (!towersDone && buildingCount(BUILDING_ARROWTOWER, true) >= 3)
+            towersDone = true;  // 箭塔用一下就过了, 拆了不补
 
         if (!wheelDone || !towerTechDone || !towersDone)
         {
@@ -3078,17 +3000,16 @@ void Mgr::strategy()
         else
         {
             if (!collageDone && buildingCount(BUILDING_COLLAGE, true) > 0) collageDone = true;
-            const bool academyDone = collageDone;
             const bool compositeDone = hasTech(BUILDING_RANGE_UPGRADE_COMPOSITE_BOW);
-            const bool defDone = hasTech(BUILDING_STOCK_UPGRADE_DEFENSE_INFANTRY);
+            const bool woodDone = hasTech(BUILDING_MARKET_WOOD_UPGRADE);
 
-            if (!academyDone || !compositeDone || !defDone)
+            if (!collageDone || !compositeDone || !woodDone)
             {
                 // 第三阶段
                 wantBuilding(BUILDING_STABLE, 1, b_prio--);
                 wantBuilding(BUILDING_COLLAGE, 1, b_prio--);
                 wantTech(BUILDING_RANGE_UPGRADE_COMPOSITE_BOW, e_prio--);
-                wantTech(BUILDING_STOCK_UPGRADE_DEFENSE_INFANTRY, e_prio--);
+                wantTech(BUILDING_MARKET_WOOD_UPGRADE, e_prio--);
             }
             else
             {
@@ -3096,18 +3017,15 @@ void Mgr::strategy()
                 wantBuilding(BUILDING_COLLAGE, 2, b_prio--);
                 wantBuilding(BUILDING_RANGE, 2, b_prio--);
 
-                wantTech(BUILDING_STOCK_UPGRADE_MISSILE_DEFENSE_INFANTRY, e_prio--);
+                wantTech(BUILDING_STOCK_UPGRADE_DEFENSE_INFANTRY, e_prio--);
+                wantTech(BUILDING_STOCK_UPGRADE_USETOOL, e_prio--);
 
-                wantUnit(AT_SCOUT, RUSH_SCOUT, e_prio--);  // 总攻时只探图不索敌的那两个
+                wantUnit(AT_SCOUT, 2, e_prio--);
 
                 const bool batch1 =
-                    unitCount(AT_HOPLITE) >= 6 &&
-                    unitCount(AT_COMPOSITE_BOWMAN) >= 6 &&
-                    unitCount(AT_CAVALRY);
+                    unitCount(AT_HOPLITE) >= 6 && unitCount(AT_COMPOSITE_BOWMAN) >= 6 && unitCount(AT_CAVALRY);
                 const bool batch2 =
-                    unitCount(AT_HOPLITE) >= 9 &&
-                    unitCount(AT_COMPOSITE_BOWMAN) >= 9 &&
-                    unitCount(AT_CAVALRY) >= 3;
+                    unitCount(AT_HOPLITE) >= 9 && unitCount(AT_COMPOSITE_BOWMAN) >= 9 && unitCount(AT_CAVALRY) >= 3;
 
                 if (!batch1)
                 {
@@ -3133,8 +3051,7 @@ void Mgr::strategy()
 
     econPlan();
 
-    if (wantFarm > 0)
-        wantBuilding(BUILDING_FARM, buildingCount(BUILDING_FARM) + wantFarm, FARM_PRIORITY);
+    if (wantFarm > 0) wantBuilding(BUILDING_FARM, buildingCount(BUILDING_FARM) + wantFarm, FARM_PRIORITY);
 }
 
 void Mgr::update(const tagInfo& info)
