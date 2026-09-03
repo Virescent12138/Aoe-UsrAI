@@ -74,25 +74,21 @@ const int CREW_LION = 1;    // 打一只狮子派几个人
 const int CREW_FIX = 2;     // 修箭塔派几个人
 
 // 总攻
-const int ASSAULT_RANGED = 25 * 60 * 23;              // 侦察兵 + 复合弓 + 投石车出动
-const int ASSAULT_MELEE = ASSAULT_RANGED + 25 * 30;   // 30s后方阵兵跟上
-const int ASSAULT_SPECIAL = ASSAULT_MELEE + 25 * 20;  // 20s特种部队
-const int KITE_BOW = 3;                               // 复合弓被贴到几格就后撤
-const int KITE_STONE = 7;                             // 投石车被贴到几格就后撤
-const int KITE_SCOUT = 4;                             // 侦察骑兵被贴到几格就后撤
-const int KITE_STEP = 2;                              // 一次后撤退几格
+const int ASSAULT_RANGED = 25 * 60 * 18;                   // 侦察兵 + 复合弓 + 投石车出动
+const int ASSAULT_SPECIAL = ASSAULT_RANGED + 25 * 60 * 3.5;  // 特种部队
+const int KITE_BOW = 5;                                    // 复合弓被贴到几格就后撤
+const int KITE_STONE = 7;                                  // 投石车被贴到几格就后撤
 
 const int LION_KEEP = 4;     // 狮子视野3
 const int ENEMY_KEEP = 10;   // 敌方单位的警戒圈, 一律按这个值, 不随索敌状态伸缩
-const int WORK_KEEP = 12;    // 敌方单位/建筑这么多格内不采集不盖房
 const int DEF_ALERT = 40;    // 进到这个距离才算来袭波次
 const int TOWER_ALERT = 50;  // 提前点名范围
 
 const int FIX_TOWER_UNTIL = 25 * 60 * 15;  // 这之后不再修塔
 const int LION_HUNT_FROM = 25 * 60 * 20;   // 20 分钟起派一个人清场, 免得狮子干扰后面的战斗
-const int CAVALRY_SEARCH_GAP = 3;
 
-// enemyai 进攻相关数据复刻
+const int CAVALRY_SEARCH_GAP = 8;
+
 const int BELONG_DEF = 40;  // 分隔攻守判据
 const int LURE_CREW = 4;    // 固定执行点名诱敌的村民数量
 
@@ -107,7 +103,7 @@ const double BASE_RATE_WOOD = 1.0;    // 木材, 个/秒
 const double HUNT_DPS = 5.0;          // 村民对活猎物的每秒伤害
 const int CORPSE_GROUP_GAP = 6;       // 肉源附近没有同伴时视为落单, 不分配人手
 const int FARM_PRIORITY = 96;         // 农田在建造队列里的优先级
-const int FARM_MAX = 12;              // 农田数量硬上限, 兜底防止反复补建
+const int FARM_MAX = 12;              // 农田数量硬上限
 
 const int ECON_REPLAN = 25 * 15;        // 每 15 秒最多进行一次跨资源换岗
 const int ECON_FLEX_MAX = 5;            // 最多约 5 人口作为机动人口
@@ -196,7 +192,7 @@ struct EconProfile
 const EconProfile ECON_PROFILE[4] = {{{4, 6, 0, 0}, {260, 700, 120, 0}, {450, 900, 180, 0}},
                                      {{3, 4, 3, 0}, {180, 220, 350, 0}, {300, 380, 550, 0}},
                                      {{5, 5, 0, 0}, {320, 220, 120, 0}, {520, 380, 180, 0}},
-                                     {{2, 5, 0, 4}, {180, 320, 120, 250}, {320, 550, 180, 450}}};
+                                     {{3, 4, 0, 3}, {180, 320, 120, 250}, {320, 550, 180, 450}}};
 
 struct GatherSpot
 {
@@ -333,8 +329,6 @@ class Mgr : public UsrAI
     void threatBuild();
     void threatStamp(int td, int tu, int r);
     int threatAt(int dr, int ur) const;
-    void dangerBuild();  // 敌方单位/建筑周围的作业禁区
-    bool dangerAt(int dr, int ur) const;
 
     void moveToCell(int sn, const Pos& p)  // 走到该格中心
     { HumanMove(sn, (0.5 + p.dr) * BLOCKSIDELENGTH, (0.5 + p.ur) * BLOCKSIDELENGTH); }
@@ -389,7 +383,6 @@ class Mgr : public UsrAI
     Grid<int> nav;  // 基地距离, -1 表示不可达
     Grid<unsigned char> navUsed;
     Grid<int> threat;                // 威胁场
-    Grid<unsigned char> danger;      // 作业禁区: 这些格子上不采集不打猎不盖房
     std::vector<int> threatTbl[17];  // tbl[r][(dx+r)*(2r+1)+(dy+r)] = r - floor(sqrt(dx*dx+dy*dy)) + 1
 
     std::vector<int> laborPool;       // 空闲人口
@@ -530,14 +523,14 @@ class Mgr : public UsrAI
     int siegeSN = -1;
     Pos siegePos = {-1, -1};
     bool towersDone = false;   // 达到过三座箭塔, 拆了也不回退
-    bool collageDone = false;  // 建成过学院, 拆了也不回退
     Grid<unsigned char> clearRoadUsed;
 
-    Pos goPoint = {-1, -1};           // 当前总攻推进点
-    std::unordered_set<int> onMove;   // 已经出发的单位
-    bool assaultOn = false;           // 总攻已经开始
+    Pos goPoint = {-1, -1};          // 当前总攻推进点
+    std::unordered_set<int> onMove;  // 已经出发的单位
+    bool assaultOn = false;          // 总攻已经开始
 
     std::vector<int> tars;  // 敌人SN列表
+    std::unordered_map<int, Pos> record; // sn -> 上次move下令地址
 
     std::vector<int> lureList;
     int lureCursor = 0;      // 轮转游标

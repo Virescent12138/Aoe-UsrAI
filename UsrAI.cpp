@@ -537,10 +537,6 @@ void Mgr::threatBuild()
 
     for (const Pos& l : lionCells) threatStamp(l.dr, l.ur, LION_KEEP);
 
-    // 一律按 ENEMY_KEEP 盖圈. 原先会在"这个敌人已经被诱饵咬住"时把半径收到射程边上,
-    // 但箭塔在几十格外点一下就能让 lockOf 成立, 于是祭司的探图路线上凭空多出一条
-    // 穿过敌营的通道. 收圈本来是给祭司贴脸转化用的, 而那条路径走的是 defenceSelector,
-    // 根本不读威胁场, 所以这里直接去掉
     for (const auto& it : eArmyMap) threatStamp(it.second->BlockDR, it.second->BlockUR, ENEMY_KEEP);
 
     for (const auto& it : eBuildingMap)
@@ -552,28 +548,6 @@ int Mgr::threatAt(int dr, int ur) const
     if (!threat.ready()) return 0;
     if (!inMap(dr, ur)) return 0;
     return threat(dr, ur);
-}
-
-// 作业禁区. 威胁场是给祭司走位用的, 会随"是否被咬住"伸缩; 派村民出门是另一回事,
-// 只要那一片有敌人就不去, 不管它此刻在打谁
-void Mgr::dangerBuild()
-{
-    danger.reset(0);
-
-    auto stamp = [&](int dr, int ur)
-    {
-        for (int i = max(0, dr - WORK_KEEP); i <= min(MAP_L - 1, dr + WORK_KEEP); i++)
-            for (int j = max(0, ur - WORK_KEEP); j <= min(MAP_U - 1, ur + WORK_KEEP); j++) danger(i, j) = 1;
-    };
-
-    for (const auto& it : eArmyMap) stamp(it.second->BlockDR, it.second->BlockUR);
-    for (const auto& it : eBuildingMap) stamp(it.second->BlockDR, it.second->BlockUR);
-}
-
-bool Mgr::dangerAt(int dr, int ur) const
-{
-    if (!danger.ready() || !inMap(dr, ur)) return false;
-    return danger(dr, ur) != 0;
 }
 
 void Mgr::sendAction(int workerSN, int targetSN)
@@ -777,16 +751,12 @@ void Mgr::arrangeGather()
     for (int k = 0; k < RK_COUNT; k++) pools[k].spots.clear();
     standTaken.reset(0);
 
-    // 肉源 = 活瞪羚 + 任意尸体. 瞪羚从活到死 SN 不变, 所以一条绑定可以横跨
-    // "击杀 -> 搬运"整个过程, 不需要单独的打猎系统. 狮子和大象活着时不招惹
     auto meatOk = [&](const tagResource* r)
     {
         if (kindOf(r->Type) != RK_CORPSE) return false;
         return r->Blood <= 0 || r->Type == RESOURCE_GAZELLE;
     };
 
-    // 落单判定把活的和死的放在一起算, 且只在新建绑定时生效 —— 否则一群猎物
-    // 打到剩最后一只时会突然变成落单, 把正在打的人撤掉
     std::vector<const tagResource*> meats;
     for (const auto& it : resourceMap)
         if (meatOk(it.second)) meats.push_back(it.second);
@@ -801,20 +771,11 @@ void Mgr::arrangeGather()
                 grouped.insert(meats[j]->SN);
             }
 
-    // 活猎物会跑, 但一次位移很小, 所以按威胁场判就够了: threat 已经把敌方单位、
-    // 箭塔和狮子都盖了圈, 大于 0 就是不该派人过去的地方
-    auto workUnsafe = [&](const tagResource* r)
-    {
-        if (r->Blood > 0 && kindOf(r->Type) == RK_CORPSE) return threatAt(r->BlockDR, r->BlockUR) > 0;
-        return dangerAt(r->BlockDR, r->BlockUR);
-    };
-
-    // 解绑. 因为危险而解绑的人立刻往回撤, 否则他会一直挂着旧的攻击指令追下去
     std::vector<int> fled;
     for (auto it = spotOfWorker.begin(); it != spotOfWorker.end();)
     {
         const tagResource* r = resource(it->second);
-        const bool unsafe = r && workUnsafe(r);
+        const bool unsafe = r && threatAt(r->BlockDR, r->BlockUR) && dis({r->DR,r->UR}, baseF) > 40 * BLOCKSIDELENGTH;
         const bool gone = !farmer(it->first) || !r || kindOf(r->Type) == RK_COUNT || unsafe ||
                           (kindOf(r->Type) == RK_CORPSE && !meatOk(r));
         if (!gone)
@@ -849,9 +810,7 @@ void Mgr::arrangeGather()
         const ResKind k = kindOf(r->Type);
         if (k == RK_COUNT) continue;
 
-        // 危险区里的资源一律不进候选. "看到那边有动物就派人过去打猎, 结果全灭"
-        // 就是这一条缺失造成的
-        if (workUnsafe(r)) continue;
+        if (threatAt(r->BlockDR, r->BlockUR) && dis({r->DR,r->UR}, baseF) > 40 * BLOCKSIDELENGTH) continue;
 
         if (k == RK_CORPSE)
         {
@@ -892,8 +851,6 @@ void Mgr::arrangeGather()
         s.rate = gatherRate(x.k, x.cost);
         if (x.k == RK_CORPSE && x.r->Blood > 0 && s.rate > EPS)
         {
-            // 击杀时间摊进产出. 瞪羚 8 血只要 1.6 秒, 相对上百秒的采运几乎可以忽略,
-            // 所以活猎物和尸体放在同一个池里按距离排序是合理的
             const double yield = (double)CNT_GAZELLE;
             s.rate = yield / (yield / s.rate + x.r->Blood / HUNT_DPS);
         }
@@ -980,7 +937,7 @@ void Mgr::farmFrame()
     {
         const tagBuilding* b = building(sn);
         if (!b || b->Percent < 100) continue;
-        if (dangerAt(b->BlockDR, b->BlockUR)) continue;  // 敌人跟前不耕地
+        if (threatAt(b->BlockDR, b->BlockUR) && dis({b->BlockDR,b->BlockUR}, base) > 40) continue;  // 敌人跟前不耕地
 
         const double half = buildingSize(BUILDING_FARM) * 0.5;
         const FloatPos at((b->BlockDR + half) * BLOCKSIDELENGTH, (b->BlockUR + half) * BLOCKSIDELENGTH);
@@ -1044,18 +1001,15 @@ bool Mgr::jobHeld(int sn, int group) const
     return it != workerJobSince.end() && gameFrame - it->second < ECON_JOB_HOLD;
 }
 
-// 阶段判据里的建筑数是"达到过", 不是"保持着": 箭塔被拆、学院被拆都不该让经济配比
-// 退回上一阶段. 科技本来就是单调的, 建筑用 towersDone / collageDone 锁住
 int Mgr::econPhase()
 {
-    if (stage == CIVILIZATION_TOOLAGE) return 0;
-
     if (!towersDone && buildingCount(BUILDING_ARROWTOWER, true) >= 3) towersDone = true;
-    if (!collageDone && buildingCount(BUILDING_COLLAGE, true) > 0) collageDone = true;
 
-    int phase = 1;
-    if (hasTech(BUILDING_MARKET_WHEEL_UPGRADE) && hasTech(BUILDING_GRANARY_ARROWTOWER) && towersDone)
-        phase = collageDone && hasTech(BUILDING_RANGE_UPGRADE_COMPOSITE_BOW) ? 3 : 2;
+    int phase = -1;
+    if (hasTech(BUILDING_RANGE_UPGRADE_COMPOSITE_BOW) && hasTech(BUILDING_MARKET_WOOD_UPGRADE)) phase = 3;
+    else if (hasTech(BUILDING_MARKET_WHEEL_UPGRADE) && towersDone) phase = 2;
+    else if (stage != CIVILIZATION_TOOLAGE) phase = 1;
+    else phase = 0;
 
     econStage = max(econStage, phase);
     return econStage;
@@ -1432,7 +1386,7 @@ void Mgr::buildPlaceMask(int size)
         for (int j = 0; j + size <= MAP_U; j++)
         {
             if (!canPlace(i, j, size)) continue;
-            if (dangerAt(i, j)) continue;  // 敌人跟前不盖房
+            if (threatAt(i, j) && dis({i, j}, base) > 40) continue;  // 敌人跟前不盖房
 
             bool reach = false;
             for (int a = i; a < i + size && !reach; a++)
@@ -1509,6 +1463,7 @@ Pos Mgr::findSpot(int type)
         case BUILDING_ARMYCAMP:
         case BUILDING_COLLAGE:
         case BUILDING_RANGE:
+        case BUILDING_HOME:
             ringAdd(costMap, base, baseLen, PLACE_ADJACENT, 0, 6);
 
             for (const auto& it : buildingMap)
@@ -1523,14 +1478,6 @@ Pos Mgr::findSpot(int type)
 
                 ringAdd(costMap, {f.BlockDR, f.BlockUR}, 1, PLACE_BONUS, 0, 4);
             }
-            break;
-
-        case BUILDING_HOME:  // 紧靠其他房屋建造(形成大矩形占地), 和基地保持5格的距离
-            for (const auto& it : buildingMap)
-                if (it.second->Type == BUILDING_HOME)
-                    ringAdd(costMap, {it.second->BlockDR, it.second->BlockUR}, buildingSize(BUILDING_HOME),
-                            -PLACE_ADJACENT * 3, 1, 1);
-            ringAdd(costMap, base, baseLen, PLACE_ADJACENT, 0, 5);
             break;
 
         case BUILDING_ARROWTOWER:
@@ -1638,8 +1585,7 @@ void Mgr::runBuild()
                 s.sn = sn;
                 break;
             }
-            // HumanBuild 是排队指令, 地基不会在同一帧出现. 不留宽限的话工地会被立刻
-            // 判失败删掉, 人被放回池里, 下一帧换个地方重新开工 —— 表现就是反复下令卡死
+
             if (s.sn < 0 && gameFrame - s.born < BUILD_WAIT)
             {
                 ++it;
@@ -1671,9 +1617,6 @@ void Mgr::runBuild()
         ++it;
     }
 
-    // 收养没人管的半成品: 工地在地基出现之前被判定失败删掉过, 或者建造工中途被抢走, 都会
-    // 留下一个永远停在 Percent < 100 的建筑, 而它会让 wantStock / wantGranary 一直以为
-    // "上一座还没盖完"从而再也不批新的
     for (const auto& it : buildingMap)
     {
         const tagBuilding& b = *it.second;
@@ -1759,8 +1702,6 @@ void Mgr::runBuild()
 
 void Mgr::prodFrame()
 {
-    // 命令只会在 techAvailable 通过后发出；这里不做失败检测或重试，
-    // 只把“宿主 Project 已结束”解释为该科技完成。
     for (auto it = runningTech.begin(); it != runningTech.end();)
     {
         const int action = *it;
@@ -2492,11 +2433,9 @@ void Mgr::DispatchMove()
         if (u.SN == priest || onMove.count(u.SN)) continue;
 
         const bool ranged = u.Sort == AT_COMPOSITE_BOWMAN || u.Sort == AT_STONE_THROWER || u.Sort == AT_SCOUT;
-        const bool special = u.Sort == AT_CAVALRY;
-        const bool melee = !ranged && !special;
+        const bool special = !ranged;
 
         if (ranged && gameFrame >= ASSAULT_RANGED) onMove.insert(u.SN);
-        if (melee && gameFrame >= ASSAULT_MELEE) onMove.insert(u.SN);
         if (special && gameFrame >= ASSAULT_SPECIAL) onMove.insert(u.SN);
     }
 }
@@ -2705,12 +2644,10 @@ bool Mgr::kite(const tagArmy& u, int radius)
     }
     if (!close) return false;
 
-    if (u.NowState == HUMAN_STATE_WALKING) return true;
-
     if (nav(here) <= 0) return true;
 
     Pos cur = here;
-    for (int step = 0; step < KITE_STEP; step++)
+    for (int step = 0; step < 2; step++) // 默认采用一次退2格, 没必要改
     {
         Pos best = {-1, -1};
         int bestNav = nav(cur);
@@ -2731,7 +2668,10 @@ bool Mgr::kite(const tagArmy& u, int radius)
 
     if (cur.dr == here.dr && cur.ur == here.ur) return true;
 
+    if (record[u.SN].dr == cur.dr && record[u.SN].ur == cur.ur) return true;
+
     moveToCell(u.SN, cur);
+    record[u.SN] = cur;
     return true;
 }
 
@@ -2778,16 +2718,9 @@ void Mgr::runAssult()
 
         int keep = 0;
         if (u.Sort == AT_STONE_THROWER) keep = KITE_STONE;
-        if (u.Sort == AT_SCOUT) keep = KITE_SCOUT;
         if (u.Sort == AT_COMPOSITE_BOWMAN) keep = KITE_BOW;
 
         if (keep > 0 && kite(u, keep)) continue;
-
-        if (u.Sort == AT_SCOUT)
-        {
-            if (p.dr >= 0 && u.NowState != HUMAN_STATE_WALKING) moveToCell(u.SN, p);
-            continue; // 不锁敌
-        }
 
         const int t = selector(u);
         if (t >= 0 && u.WorkObjectSN == t) continue;
@@ -2828,6 +2761,23 @@ void Mgr::runAtkPriest()
                 if (siegeDis({i, j}) < threshold) continue;
 
                 const int d = dis({i, j}, here);
+                if (best.dr >= 0 && d >= bestDis) continue;
+                bestDis = d;
+                best = {i, j};
+            }
+        if (p->NowState != HUMAN_STATE_WALKING && best.dr >= 0) moveToCell(p->SN, best);
+    }
+    else if (siegeDis({p->BlockDR, p->BlockUR}) > threshold + 5)
+    {
+        Pos best = {-1, -1};
+        int bestDis = 0;
+        for (int i = 0; i < MAP_L; i++)
+            for (int j = 0; j < MAP_U; j++)
+            {
+                if (!walkable(i, j) || nav(i, j) < 0) continue;
+                if (siegeDis({i, j}) < threshold) continue;
+
+                const int d = siegeDis({i, j});
                 if (best.dr >= 0 && d >= bestDis) continue;
                 bestDis = d;
                 best = {i, j};
@@ -2881,7 +2831,7 @@ void Mgr::killLions()
     double best = 0;
     for (const tagResource* l : lionSet)
     {
-        if (dangerAt(l->BlockDR, l->BlockUR)) continue;
+        if (threatAt(l->BlockDR, l->BlockUR) && dis({l->DR, l->UR}, baseF) > 40 * BLOCKSIDELENGTH) continue;
 
         const double d = dis({l->DR, l->UR}, baseF);
         if (!tar || d < best || (d == best && l->SN < tar->SN))
@@ -2977,7 +2927,7 @@ void Mgr::strategy()
 
     if (stage == CIVILIZATION_TOOLAGE)
     {
-        // 第一阶段
+        // 0
         wantBuilding(BUILDING_ARMYCAMP, 1, b_prio--);
         wantBuilding(BUILDING_RANGE, 1, b_prio--);
         wantBuilding(BUILDING_MARKET, 1, b_prio--);
@@ -2986,64 +2936,57 @@ void Mgr::strategy()
     else
     {
         const bool wheelDone = hasTech(BUILDING_MARKET_WHEEL_UPGRADE);
-        const bool towerTechDone = hasTech(BUILDING_GRANARY_ARROWTOWER);
-        if (!towersDone && buildingCount(BUILDING_ARROWTOWER, true) >= 3)
-            towersDone = true;  // 箭塔用一下就过了, 拆了不补
 
-        if (!wheelDone || !towerTechDone || !towersDone)
+        if (!wheelDone || !towersDone)
         {
-            // 第二阶段
+            // 1
             wantTech(BUILDING_MARKET_WHEEL_UPGRADE, e_prio--);
             wantTech(BUILDING_GRANARY_ARROWTOWER, e_prio--);
+            wantTech(BUILDING_RANGE_UPGRADE_COMPOSITE_BOW, e_prio--);
+            wantTech(BUILDING_MARKET_WOOD_UPGRADE, e_prio--);
+
             wantBuilding(BUILDING_ARROWTOWER, 3, b_prio--);
         }
         else
         {
-            if (!collageDone && buildingCount(BUILDING_COLLAGE, true) > 0) collageDone = true;
             const bool compositeDone = hasTech(BUILDING_RANGE_UPGRADE_COMPOSITE_BOW);
             const bool woodDone = hasTech(BUILDING_MARKET_WOOD_UPGRADE);
 
-            if (!collageDone || !compositeDone || !woodDone)
+            if (!compositeDone || !woodDone)
             {
-                // 第三阶段
+                // 2
                 wantBuilding(BUILDING_STABLE, 1, b_prio--);
-                wantBuilding(BUILDING_COLLAGE, 1, b_prio--);
                 wantTech(BUILDING_RANGE_UPGRADE_COMPOSITE_BOW, e_prio--);
                 wantTech(BUILDING_MARKET_WOOD_UPGRADE, e_prio--);
             }
             else
             {
-                // 最后阶段
-                wantBuilding(BUILDING_COLLAGE, 2, b_prio--);
+                // 3
                 wantBuilding(BUILDING_RANGE, 2, b_prio--);
+                wantBuilding(BUILDING_STABLE, 2, b_prio--);
 
-                wantTech(BUILDING_STOCK_UPGRADE_DEFENSE_INFANTRY, e_prio--);
                 wantTech(BUILDING_STOCK_UPGRADE_USETOOL, e_prio--);
-
-                wantUnit(AT_SCOUT, 2, e_prio--);
+                wantTech(BUILDING_STOCK_UPGRADE_DEFENSE_ARCHER, e_prio--);
 
                 const bool batch1 =
-                    unitCount(AT_HOPLITE) >= 6 && unitCount(AT_COMPOSITE_BOWMAN) >= 6 && unitCount(AT_CAVALRY);
+                    unitCount(AT_COMPOSITE_BOWMAN) >= 8 && unitCount(AT_CAVALRY) >= 2;
                 const bool batch2 =
-                    unitCount(AT_HOPLITE) >= 9 && unitCount(AT_COMPOSITE_BOWMAN) >= 9 && unitCount(AT_CAVALRY) >= 3;
+                    unitCount(AT_COMPOSITE_BOWMAN) >= 14 && unitCount(AT_CAVALRY) >= 6;
 
                 if (!batch1)
                 {
-                    wantUnit(AT_HOPLITE, 6, e_prio--);
-                    wantUnit(AT_COMPOSITE_BOWMAN, 6, e_prio--);
+                    wantUnit(AT_COMPOSITE_BOWMAN, 8, e_prio--);
                     wantUnit(AT_CAVALRY, 2, e_prio--);
                 }
                 else if (!batch2)
                 {
-                    wantUnit(AT_HOPLITE, 9, e_prio--);
-                    wantUnit(AT_COMPOSITE_BOWMAN, 9, e_prio--);
-                    wantUnit(AT_CAVALRY, 3, e_prio--);
+                    wantUnit(AT_COMPOSITE_BOWMAN, 14, e_prio--);
+                    wantUnit(AT_CAVALRY, 6, e_prio--);
                 }
                 else
                 {
-                    wantUnit(AT_HOPLITE, 12, e_prio--);
-                    wantUnit(AT_COMPOSITE_BOWMAN, 12, e_prio--);
-                    wantUnit(AT_CAVALRY, 4, e_prio--);
+                    wantUnit(AT_COMPOSITE_BOWMAN, 22, e_prio--);
+                    wantUnit(AT_CAVALRY, 10, e_prio--);
                 }
             }
         }
@@ -3060,7 +3003,6 @@ void Mgr::update(const tagInfo& info)
     claimed.clear();  // 认领记录整帧有效, 只在帧首清零
     navBuild();
     threatBuild();  // 采集/建造的选址都要读它, 必须先于 arrangeGather
-    dangerBuild();
     arrangeGather();
     buildFrame();
     farmFrame();
