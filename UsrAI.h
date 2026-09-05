@@ -235,6 +235,23 @@ class Mgr : public UsrAI
     void makeFrame(const tagInfo& info);
     void mark(const tagBuilding& b);
 
+    std::unordered_map<int, const tagFarmer*> farmerMap;
+    std::unordered_map<int, const tagArmy*> armyMap;
+    std::unordered_map<int, const tagBuilding*> buildingMap;
+    std::unordered_map<int, const tagResource*> resourceMap;
+    std::unordered_map<int, const tagArmy*> eArmyMap;
+    std::unordered_map<int, const tagBuilding*> eBuildingMap;
+
+    std::unordered_map<int, std::vector<int>> byType;  // 建筑类型 -> SN 列表(默认顺序)
+    std::vector<int> unitCnt, bldCnt, bldDoneCnt;
+
+    template <class T>
+    static const T* get(const std::unordered_map<int, const T*>& m, int sn)
+    {
+        auto it = m.find(sn);
+        return it == m.end() ? nullptr : it->second;
+    }
+
     const tagFarmer* farmer(int sn) const { return get(farmerMap, sn); }
     const tagArmy* army(int sn) const { return get(armyMap, sn); }
     const tagBuilding* building(int sn) const { return get(buildingMap, sn); }
@@ -282,23 +299,6 @@ class Mgr : public UsrAI
     bool workerReserved(int sn) const;   // 在专职岗位上(农田/工地/修塔/打狮子), 不许被抢
     bool civilWorkerSafe(int sn) const;  // 当前人在驻守禁区的基地安全侧
     void workerDrop(int sn);             // 从所有岗位解绑
-
-    template <class T>
-    static const T* get(const std::unordered_map<int, const T*>& m, int sn)
-    {
-        auto it = m.find(sn);
-        return it == m.end() ? nullptr : it->second;
-    }
-
-    std::unordered_map<int, const tagFarmer*> farmerMap;
-    std::unordered_map<int, const tagArmy*> armyMap;
-    std::unordered_map<int, const tagBuilding*> buildingMap;
-    std::unordered_map<int, const tagResource*> resourceMap;
-    std::unordered_map<int, const tagArmy*> eArmyMap;
-    std::unordered_map<int, const tagBuilding*> eBuildingMap;
-
-    std::unordered_map<int, std::vector<int>> byType;  // 建筑类型 -> SN 列表(默认顺序)
-    std::vector<int> unitCnt, bldCnt, bldDoneCnt;
 
     std::vector<unsigned char> blockCell;  // 被资源或建筑占住的格子, cellIdx 索引
     const std::vector<std::vector<tagTerrain>>* theMap = nullptr;
