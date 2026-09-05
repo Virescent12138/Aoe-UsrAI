@@ -1,0 +1,26 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Aoe Debug (F5)",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/Debug/bin/aoe.exe",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [
+                {
+                    "name": "PATH",
+                    "value": "D:\\Qt5\\5.9.2\\msvc2017_64\\bin;${env:PATH}"
+                },
+                {
+                    "name": "QT_PLUGIN_PATH",
+                    "value": "D:\\Qt5\\5.9.2\\msvc2017_64\\plugins"
+                }
+            ],
+            "console": "integratedTerminal",
+            "preLaunchTask": "CMake: configure and build Debug"
+        }
+    ]
+}

@@ -5,7 +5,7 @@
             "name": "debug",
             "displayName": "Debug - MSVC x64 + Ninja + Qt5",
             "generator": "Ninja",
-            "binaryDir": "${sourceDir}/build",
+            "binaryDir": "${sourceDir}/Debug",
             "toolset": {
                 "value": "host=x64",
                 "strategy": "external"
@@ -30,7 +30,7 @@
             "name": "release",
             "displayName": "Release - MSVC x64 + Ninja + Qt5",
             "inherits": "debug",
-            "binaryDir": "${sourceDir}/build-release",
+            "binaryDir": "${sourceDir}/Build",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "OFF",

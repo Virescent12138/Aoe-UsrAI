@@ -13,10 +13,8 @@ object_script.*
 *.qmake.stash
 *.pro.user*
 # 构建目录
-debug/
-release/
-build/
-build-release/
+Debug/
+Build/
 
 # 日志文件
 *.log
@@ -25,7 +23,6 @@ build-release/
 .cursor
 
 # VS Code相关文件
-.vscode/
 .claude/
 
 # JetBrains IDE相关文件

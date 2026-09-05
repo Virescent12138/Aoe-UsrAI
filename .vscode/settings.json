@@ -1,0 +1,7 @@
+{
+    "cmake.useCMakePresets": "always",
+    "cmake.configureOnOpen": false,
+    "cmake.buildBeforeRun": false,
+    "C_Cpp.default.compileCommands": "${workspaceFolder}/Debug/compile_commands.json",
+    "C_Cpp.errorSquiggles": "disabled"
+}
