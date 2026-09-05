@@ -60,7 +60,6 @@ const int SCOUT_MIN_GAIN = 8;                              // 至少探明这么
 const int SCOUT_STUCK = 75;                                // 卡住
 const int SCOUT_COOLDOWN = 375;                            // 暂时不去了
 const int SCOUT_HOME_STAY = 25 * 90;                       // 回避时间
-const int SCOUT_ANCHOR_GAP = 250;                          // 锚点多少帧重算一次
 const int SCOUT_WAVE[3] = {25 * 240, 25 * 540, 25 * 840};  // 波次
 
 const int CREW_BUILD = 2;   // 一个工地派几个人
@@ -123,20 +122,9 @@ struct Pos
 struct FloatPos
 {
     double dr = -1.0, ur = -1.0;
-    int sn = -1;  // 如果只表示点坐标, 不需要修改其值
-
     FloatPos() = default;
-    FloatPos(const Pos& p)
-    {
-        dr = p.dr * BLOCKSIDELENGTH + 0.5 * BLOCKSIDELENGTH;
-        ur = p.ur * BLOCKSIDELENGTH + 0.5 * BLOCKSIDELENGTH;
-    }
-    FloatPos(double a, double b, int s = -1)
-    {
-        dr = a;
-        ur = b;
-        sn = s;
-    }
+    FloatPos(const Pos& p) : dr((p.dr + 0.5) * BLOCKSIDELENGTH), ur((p.ur + 0.5) * BLOCKSIDELENGTH) {}
+    FloatPos(double a, double b) : dr(a), ur(b) {}
 };
 
 struct Stock
@@ -159,7 +147,6 @@ struct Stock
         gold -= o.gold;
         return *this;
     }
-    friend Stock operator+(Stock a, const Stock& b) { return a += b; }
     friend Stock operator-(Stock a, const Stock& b) { return a -= b; }
 
     bool covers(const Stock& c) const { return wood >= c.wood && meat >= c.meat && stone >= c.stone && gold >= c.gold; }
@@ -181,7 +168,6 @@ const int ECON_WEIGHT[3][4] = {{3, 7, 0, 0}, {4, 4, 0, 2}, {1, 4, 0, 4}};
 struct GatherSpot
 {
     int sn = -1;
-    FloatPos at = {-1, -1};
     Pos stand = {-1, -1};
     double cost = 0;  // 落脚点到最近存放点的像素距离
     double rate = 0;  // 综合搬运距离后的每秒产出
@@ -223,17 +209,9 @@ inline double transportRate(double baseRate, double dropDis)
 
 inline double gatherRate(ResKind k, double dropDis)
 {
-    double baseR = 0;
-    switch (k)
-    {
-        case RK_WOOD: baseR = BASE_RATE_WOOD; break;
-        case RK_STONE: baseR = BASE_RATE_STONE; break;
-        case RK_GOLD: baseR = BASE_RATE_GOLD; break;
-        case RK_BUSH: baseR = BASE_RATE_BUSH; break;
-        case RK_CORPSE: baseR = BASE_RATE_CORPSE; break;
-        default: baseR = 0.0; break;
-    }
-    return transportRate(baseR, dropDis);
+    static const double rate[RK_COUNT] = {
+        BASE_RATE_WOOD, BASE_RATE_STONE, BASE_RATE_GOLD, BASE_RATE_BUSH, BASE_RATE_CORPSE};
+    return k < RK_COUNT ? transportRate(rate[k], dropDis) : 0.0;
 }
 
 int buildingSize(int type);
@@ -280,15 +258,15 @@ class Mgr : public UsrAI
     Stock available() const { return res - held; }
     bool afford(const Stock& c) const { return available().covers(c); }
 
-    void navBuild();                                   // 以基地占地为源 bfs, nav[cellIdx(dr, ur)] 即距离, -1 不可达
-    void civilDangerBuild();                           // 记忆驻守敌人并生成村民禁区
-    void civilNavBuild();                              // 不穿驻守禁区的村民可达图
-    bool civilSafeSite(const Pos& p, int size) const;  // 地基/农田及外围施工区安全
-    // 以 around 起 size*size 方块为种子, 第 r 环(0 为种子自己)加 cost + r * delta, 只记 [inner, outer] 环
+    enum FieldMode { FIELD_WALK, FIELD_CIVIL, FIELD_ATTACK, FIELD_SAFE };
+    void fieldBuild(std::vector<int>& out, const Pos& src, int size, FieldMode mode, std::vector<int>* prev = nullptr);
+    void navBuild();
+    void civilDangerBuild();                           // 只维护驻守敌人记忆
+    bool civilDangerAt(int dr, int ur) const;
+    void civilNavBuild();
+    bool civilSafeSite(const Pos& p, int size) const;
     void ringAdd(std::vector<int>& g, const Pos& around, int size, int cost, int inner, int outer, int delta = 0);
-    void threatBuild();
-    void threatStamp(int td, int tu, int r);
-    int threatAt(int dr, int ur) const;
+    int threatAt(int dr, int ur) const;                // 当前敌人/狮子即时计算
 
     void moveToCell(int sn, const Pos& p)  // 走到该格中心
     { HumanMove(sn, (0.5 + p.dr) * BLOCKSIDELENGTH, (0.5 + p.ur) * BLOCKSIDELENGTH); }
@@ -296,10 +274,10 @@ class Mgr : public UsrAI
 
     void laborBuild();  // 重建空闲池
     void laborRelease();
-    int nearestOf(const std::vector<int>& cand, const FloatPos& at) const;
     int takeNearest(const FloatPos& at, bool steal = false);  // steal 时可从在岗的人里抢
     void freeWorker(int sn);                                  // 交还空闲池(该村民已阵亡则丢弃)
 
+    static int targetOf(const std::unordered_map<int, int>& jobs, int workerSN);  // target -> worker 的反查
     bool workerBusy(int sn) const;       // 已被某个岗位登记
     bool workerReserved(int sn) const;   // 在专职岗位上(农田/工地/修塔/打狮子), 不许被抢
     bool civilWorkerSafe(int sn) const;  // 当前人在驻守禁区的基地安全侧
@@ -318,10 +296,6 @@ class Mgr : public UsrAI
     std::unordered_map<int, const tagResource*> resourceMap;
     std::unordered_map<int, const tagArmy*> eArmyMap;
     std::unordered_map<int, const tagBuilding*> eBuildingMap;
-    std::unordered_set<const tagResource*> lionSet;
-    std::unordered_set<int> allySet;
-    std::vector<int> armySNs;  // 默认顺序
-    std::vector<Pos> lionCells;
 
     std::unordered_map<int, std::vector<int>> byType;  // 建筑类型 -> SN 列表(默认顺序)
     std::vector<int> unitCnt, bldCnt, bldDoneCnt;
@@ -332,12 +306,11 @@ class Mgr : public UsrAI
     int gameFrame = 0;
     Stock res;   // 当前库存
     Stock held;  // 本帧已被生产预定
-    int maxHuman = 0;
     int stage = 0;
 
     // 固定信息
     Pos base = {-1, -1};
-    FloatPos baseF = {-1, -1, -1};
+    FloatPos baseF = {-1, -1};
     int priest = -1;
 
     std::vector<int> nav;  // 基地距离, -1 表示不可达
@@ -345,22 +318,16 @@ class Mgr : public UsrAI
     // 村民避险：驻守敌人脱离视野后仍记忆；一旦确认移动则永久移出驻守集合。
     std::unordered_map<int, Pos> guardEnemies;
     std::unordered_set<int> mobileEnemies;
-    std::vector<unsigned char> civilDanger;
     std::vector<int> civilNav;
 
-    std::vector<int> threat;         // 威胁场, 仅供探图避险
-    std::vector<int> threatTbl[17];  // tbl[r][(dx+r)*(2r+1)+(dy+r)] = r - floor(sqrt(dx*dx+dy*dy)) + 1
 
     std::vector<int> laborPool;       // 空闲人口
-    std::unordered_set<int> claimed;  // 本帧被认领过的 SN, 防止一帧内反复抢同一人
 
     // 采集
     void arrangeGather();  // 重建仓储点与全部资源池, 清理失效绑定
-    void gatherReset();    // 人口分配前清零
     void runGather();      // 按 desired 调整人口并下令
-    void buildDepots();
     bool standCell(const tagResource* r, Pos& out) const;  // 采集占地分配
-    double depotCost(const FloatPos& at, const std::vector<FloatPos>& depots) const;
+    double depotCost(const FloatPos& at, int depotType) const;
     void dropSpot(int workerSN, bool toFree);  // 解开一条绑定
 
     // 农田
@@ -369,18 +336,31 @@ class Mgr : public UsrAI
     void unbind(std::unordered_map<int, int>::iterator it);
 
     // 人口分配
+    enum EconRes { E_WOOD, E_FOOD, E_STONE, E_GOLD, E_COUNT };
+    enum FoodKind { F_CORPSE, F_BUSH, F_FARM, F_PENDING_FARM, F_NEW_FARM };
+
+    struct FoodPlan
+    {
+        std::vector<int> jobs;  // 按收益排序后的 FoodKind
+        int cursor = 0;         // 前 cursor 个已被战略食物目标消费
+        int current = 0;        // 当前实际可工作的食物岗位
+        int future = 0;         // 在建/未来农田岗位
+        int newFarm = 0;        // 其中需要新建的农田岗位
+        int pendingFarm = 0;
+        int farmCap = 0;
+    };
+
+    int econPick(int phase, const int count[E_COUNT], const int cap[E_COUNT]) const;
+    FoodPlan planFood(int wanted);
+    bool takeFood(FoodPlan& plan);
     void econPlan(int phase);
 
     GatherPool pools[RK_COUNT];
-    std::unordered_map<int, int> spotOfWorker;  // 村民SN -> 资源SN
     std::unordered_map<int, int> workerOfSpot;  // 资源SN -> 村民SN
     std::vector<unsigned char> standTaken;      // 已被某个资源点占用的落脚格
-    std::vector<FloatPos> foodDepots;           // 基地 + 谷仓
-    std::vector<FloatPos> resDepots;            // 基地 + 仓库
 
     std::vector<int> farmList;  // 已完工农田, 按单人产出降序
-    std::unordered_map<int, int> farmToWorker;
-    std::unordered_map<int, int> workerToFarm;
+    std::unordered_map<int, int> farmToWorker;  // 农田SN -> 村民SN
 
     int farmDesired = 0;  // 本帧目标农田岗位数
     int wantFarm = 0;     // 本帧规划新建几块农田
@@ -388,6 +368,7 @@ class Mgr : public UsrAI
     // 建造
     void buildFrame();                                             // 清空排队, 重算仓库收益图
     void runBuild();                                               // 维护建造
+    void releaseBuilders(BuildSite& s, bool stop);                  // 释放工地人员；stop 时先取消旧施工令
     void wantBuilding(int buildingType, int total, int priority);  // 该类总数补到 total
     void wantStock(int priority);                                  // 两名以上村民实际需要时补
     void wantGranary(int priority);                                // 两名以上村民实际需要时补
@@ -399,7 +380,6 @@ class Mgr : public UsrAI
     int queuedBuild(int type) const;
     bool buildAvailable(int type) const;
     Pos findSpot(int type);
-    void buildPlaceMask(int size);
 
     // 生产
     void prodFrame();                                  // 清空本帧队列
@@ -408,29 +388,31 @@ class Mgr : public UsrAI
     void wantUnit(int type, int total, int priority);  // 该类总数补到 total
     void wantTech(int action, int priority);           // 一次性科技
     int queuedProd(int action) const;
+    int projectCount(int action) const;  // 当前有多少建筑正在执行该 action
     bool hasTech(int action) const { return doneTech.count(action) > 0; }
     bool techAvailable(int action) const;
     int idleHost(int buildingType, const std::set<int>& busy) const;
 
-    std::multiset<std::pair<int, int>> builds;  // 等待建造队列, pair<priority, buildingType>
+    std::vector<std::pair<int, int>> builds;  // 本帧建造需求, pair<priority, buildingType>
     std::vector<BuildSite> sites;
-    std::vector<int> costMap;
-    std::vector<unsigned char> placeOk;
-    std::vector<long long> psum;                     // costMap 的二维前缀和, 宽 MAP_U + 1
     std::unordered_map<long long, int> failedSpots;  // (buildingType, cell) -> fail count
 
     std::vector<Pos> granaryPendings;  // 要采但离谷仓太远的浆果
     std::vector<Pos> stockPendings;    // 要采但离仓库太远的猎物尸体
 
-    std::multiset<std::pair<int, int>> prods;  // pair<priority, action>, 从高到低
-    std::unordered_set<int> techOrders;        // 本帧 prods 中哪些 action 是科技
-    std::unordered_set<int> runningTech;       // 已经下令且尚未完成
+    struct ProdOrder
+    {
+        int priority;
+        int action;
+        bool tech;
+    };
+    std::vector<ProdOrder> prods;             // 本帧生产/科技需求
+    std::unordered_set<int> runningTech;      // 已经下令且尚未完成
     std::unordered_set<int> doneTech;          // 仅在 Project 结束后进入
 
     // 侦察
     void runScout();
     void floodThreat(const Pos& from, bool avoidThreat);  // 逐格bfs; avoidThreat 表示不许穿威胁格
-    void buildUnknown();
     int wpGain(const Pos& c) const;                          // c 为圆心半径 SCOUT_VIEW 内的未知格数
     bool nearestStand(const Pos& c, int r, Pos& out) const;  // c 附近 r 格内最近的可达格
     int pickWaypoint(Pos& stand) const;                      // 最近的还有收益的路径点, 返回其下标
@@ -447,12 +429,10 @@ class Mgr : public UsrAI
     void fixTower();
     void runTower();
     int defenceSelector(const tagArmy& u) const;
-    void runPriest();
-    void runArmy();
+    void runDefenders();
 
     bool combat = false;        // 本帧祭司不探图
-    std::vector<int> hostiles;  // 本帧要处理的敌人SN, 升序
-    std::vector<int> towerAtk;  // 本帧要骗索敌的敌人SN, 升序
+    std::vector<int> hostiles;  // 本帧要处理的敌人SN
     std::set<int> fixCrew;      // 正在修箭塔的人
 
     // 进攻
@@ -461,10 +441,10 @@ class Mgr : public UsrAI
     void offenseUpdate();              // 清理死人留下的移动令, 更新 tars
     int siegeDis(const Pos& p) const;  // 到攻城厂的格距, 未定位返回角落运算
 
-    int selector(const tagArmy& u);
+    int attackSelector(const tagArmy& u) const;
     void vanguardPick();  // 大部队出动前维持一支提前批次
     bool inVanguard(int sn) const { return vanguard.count(sn) > 0; }
-    void runAssult();
+    void runAssault();
     void runAtkPriest();  // 祭司
     void clearRoad();     // 借过一下
 
@@ -478,9 +458,10 @@ class Mgr : public UsrAI
     int slotOf(const tagArmy& u) const;                  // 单位当前实际站的子位
     void slotClaim(const tagArmy& u, int slot);          // 占位; 大体积单位连带封周围一圈
     bool slotFree(int slot, const tagArmy& u) const;     // 该单位放得下; 判据与 slotClaim 对称
-    int pickSlot(const tagArmy& u, bool retreat);        // 选一个可用子位, 没有返回 -1
+    int pickSlot(const tagArmy& u, bool retreat);        // 沿 nav 后撤或沿 atkField 推进一格
     double enemyGap(const FloatPos& at) const;           // 到最近敌军的格距, 没有敌军返回很大值
     void sendTo(const tagArmy& u, int slot, bool back);  // 占位 + 登记 + 下移动令
+    bool keepMove(const tagArmy& u, bool interrupt);     // 维护在途命令；仍应继续走返回 true
 
     Pos corner = {-1, -1};  // 与基地对角的地图角
     int siegeSN = -1;
@@ -494,14 +475,14 @@ class Mgr : public UsrAI
     std::vector<int> slotOwner;  // 子位 -> 占用者 SN, -1 为空
     std::vector<int> slotBlack;  // 子位拉黑到期帧
 
-    struct Wait  // 一条正在执行的移动命令
+    struct MoveOrder  // 一条正在执行的移动命令
     {
         int slot = -1;
         double gap = 0;      // 上次记录的到目标格距
         int idle = 0;        // 连续没有进展的帧数
         bool back = false;   // 后撤令必须走完; 推进令可被敌人或新目标打断
     };
-    std::unordered_map<int, Wait> moveGoal;
+    std::unordered_map<int, MoveOrder> moveGoal;
 
     // 雷霆狮子
     void killLions();
@@ -516,15 +497,12 @@ class Mgr : public UsrAI
     bool routeFlee = false;  // 当前route是逃跑路线还是探图路线
 
     // 每轴 MAP_L / SCOUT_VIEW + 1 个点, 下标 idx = i * 每轴点数 + j 对应 Pos(i, j) * SCOUT_VIEW
-    std::vector<int> unknownRow;        // 每行未知格的前缀和, 宽 MAP_U + 1
     std::vector<int> wpCooldown;        // 卡住过的路径点的冷却到期帧, 过期自动解除
     std::vector<unsigned char> wpDone;  // 已经站到过的路径点
     int goalWp = -1;                    // 目标路径点下标, -1 表示还没选
     Pos goalStand = {-1, -1};           // 探图时是goalWp, 回家时是基地旁
     bool arrived = false;
-    Pos anchor;
     Pos home;
-    int lastAnchorChanged = -SCOUT_ANCHOR_GAP;
     FloatPos lastPos = {-1, -1};
     int lastRecordFrame = 0;
 
