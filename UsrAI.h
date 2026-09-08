@@ -338,7 +338,7 @@ class Mgr : public UsrAI
     void sendAction(int workerSN, int targetSN);  // 智能命令
 
     // 村民调度
-    void laborBuild();  // 重建空闲池
+    void laborFrame();  // 重建空闲池
     void laborRelease();
     int takeNearest(const FloatPos& at, bool steal = false);  // steal 时可从在岗的人里抢
     void freeWorker(int sn);                                  // 交还空闲池(该村民已阵亡则丢弃)
