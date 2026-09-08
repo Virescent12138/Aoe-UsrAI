@@ -3,6 +3,7 @@
 #include <tuple>
 #include <unordered_map>
 #include <iostream>
+#include <bits/stdc++.h>
 #include <chrono>
 #include<vector>
 #include<array>
@@ -852,6 +853,28 @@ QImage GenerateGrassVariant(
 
 } // namespace GrassGenerator
 
+QImage TopDownToIsometric(QImage& src){
+
+    src=src.convertToFormat(QImage::Format_RGB888);
+    int w=src.width(),h=src.height();
+    int tarW=(w+h+1)>>1,tarH=(w+h+3)>>2;
+    QImage ret(tarW,tarH,QImage::Format_RGBA8888);
+    ret.fill(Qt::transparent);
+    //反向映射
+    for(int si=0;si<tarW;++si){
+        for(int sj=0;sj<tarH;++sj){
+            int i=(2*si+4*sj-tarW)/2;
+            int j=(4*sj-2*si+tarW)/2;
+            if(i<0||i>=w||j<0||j>=h)
+            {
+                continue;
+            }
+            ret.setPixelColor(si,sj,src.pixelColor(i,j));
+        }
+    }
+    //
+    return ret;
+}
 void Map::refineBaseTerrain()
 {
     using Data=array<int,2>;
@@ -870,7 +893,7 @@ void Map::refineBaseTerrain()
     vector<vector<bool>>blockLegal(MAP_L,vector<bool>(MAP_U));
     for(int i=0;i<MAP_L;++i){
         for(int j=0;j<MAP_U;++j){
-            blockLegal[i][j]= !IsBeach(i,j) && !IsOcean(i,j) && !CheckNearOcean(i,j);
+            blockLegal[i][j]= !IsBeach(i,j) && !IsOcean(i,j) ;
         }
     }
 
@@ -922,8 +945,8 @@ void Map::refineBaseTerrain()
     dirt=dirt.scaled(ImageSize,ImageSize,Qt::IgnoreAspectRatio,Qt::FastTransformation);
     Random rd;
     for(int i=0;i<100;++i){
-        QImage img=GrassGenerator::GenerateGrassVariant(resMap["Grass"].front().toImage(),rd.nextInt(0,20050119));
-        Block::blockForDeepRender.push_back(new QPixmap(QPixmap::fromImage(img)));
+        QImage img=GrassGenerator::GenerateGrassVariant(grass,rd.nextInt(0,20050119));
+        Block::blockForDeepRender.push_back(new QPixmap(QPixmap::fromImage(TopDownToIsometric(img))));
     }
     //Block::blockForDeepRender.push_back(new QPixmap(QPixmap::fromImage(grass)));
     Block::blockForDeepRender.push_back(new QPixmap(QPixmap::fromImage(dirt)));
@@ -1644,7 +1667,9 @@ void Map::loadfindPathMapTemperature()
         for(int x=0; x<MAP_L; x++)
             for(int y=0; y<MAP_U; y++)
             {
-                if(TreeBlock[x][y] || barrierMap[x][y] || (represent == NOWPLAYERREPRESENT && !cell[x][y].Explored))
+                if(TreeBlock[x][y] || barrierMap[x][y]
+                        /*||(represent == NOWPLAYERREPRESENT && !cell[x][y].Explored)*/
+                        )
                     findPathMapTemperature[represent][x][y] = 1;
             }
     return;
@@ -2276,36 +2301,41 @@ void Map::InitCell(int Num, bool isExplored, bool isVisible) {
  * 返回值：空。
  */
 
-void Map::loadGenerateMapText()
+void Map::loadGenerateMapText(QString targetMapPath)
 {
     // 使用高精度时间为种子的真随机数生成器
     QString mapPath;
-    QString fixedMapFile = RuntimeConfig_FixedMapFile().trimmed();
-    QString mapSuffix = QString::fromStdString(MAPFILE_SUFFIX);
-
-    if(!fixedMapFile.isEmpty()){
-        mapPath = fixedMapFile;
-        if(QFileInfo(mapPath).suffix().isEmpty()){
-            mapPath += "." + mapSuffix;
-        }
-        if(!QFileInfo(mapPath).isAbsolute()){
-            mapPath = QDir::current().absoluteFilePath(mapPath);
-        }
-        if(!QFileInfo(mapPath).isFile()){
-            qWarning() << "fixed map file not found:" << mapPath;
-            return;
+    //随机地图或者配置文件指定地图
+    if(targetMapPath.size()==0){
+        QString fixedMapFile = RuntimeConfig_FixedMapFile().trimmed();
+        QString mapSuffix = QString::fromStdString(MAPFILE_SUFFIX);
+        if(!fixedMapFile.isEmpty()){
+            mapPath = fixedMapFile;
+            if(QFileInfo(mapPath).suffix().isEmpty()){
+                mapPath += "." + mapSuffix;
+            }
+            if(!QFileInfo(mapPath).isAbsolute()){
+                mapPath = QDir::current().absoluteFilePath(mapPath);
+            }
+            if(!QFileInfo(mapPath).isFile()){
+                qWarning() << "fixed map file not found:" << mapPath;
+                return;
+            }
+        }else{
+            auto AllMapFile=GetAllTargetFiles(mapSuffix);
+            if(AllMapFile.empty()){
+                qWarning() << "map file not found, suffix:" << mapSuffix;
+                return;
+            }
+            unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
+            std::mt19937 gen(seed);
+            std::uniform_int_distribution<> dis(0,AllMapFile.size()-1);
+            int mapIdx = dis(gen); // 1~4
+            mapPath=AllMapFile[mapIdx];
         }
     }else{
-        auto AllMapFile=GetAllTargetFiles(mapSuffix);
-        if(AllMapFile.empty()){
-            qWarning() << "map file not found, suffix:" << mapSuffix;
-            return;
-        }
-        unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
-        std::mt19937 gen(seed);
-        std::uniform_int_distribution<> dis(0,AllMapFile.size()-1);
-        int mapIdx = dis(gen); // 1~4
-        mapPath=AllMapFile[mapIdx];
+        //传进来的地图
+        mapPath=targetMapPath;
     }
     QFile file(mapPath);
     MapFileName=mapPath.split("/").back();
@@ -2678,12 +2708,12 @@ bool Map::CheckIsNearOcean(int x, int y)
  * 内容：初始化地图的总函数；
  * 返回值：空。
  */
-void Map::init() {
+void Map::init(QString mapPath) {
     InitCell(0, MAP_EXPLORE, false);    // 第二个参数修改为true时可令地图全部可见
-    loadGenerateMapText();  //载入地图
+    loadGenerateMapText(mapPath);  //载入地图
     divideTheMap_commonPlay();                 //把地图化分成一个一个连通块
     refineShore();
-    if(!OffScreen && DeepRender)refineBaseTerrain();
+    if(!OffScreen && DeepRender&& !EditorMode)refineBaseTerrain();
 }
 
 void Map::ResetMapType(int blockL, int blockU)

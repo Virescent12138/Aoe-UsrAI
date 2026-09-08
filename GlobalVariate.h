@@ -10,6 +10,7 @@
 #include<QNetworkReply>
 #include "RuntimeConfig.h"
 #include "library/random/random.hpp"
+#include"farchive.h"
 
 using namespace std;
 class Coordinate;
@@ -114,6 +115,7 @@ struct tagResource:tagObj
     int32_t ProductSort; // 产品种类
     int32_t Cnt; // 剩余资源数量
     int32_t Blood; // 当前血量
+    int32_t WorkObjectSN;//攻击的对象
 };
 
 struct tagHuman:tagObj
@@ -174,19 +176,27 @@ struct instruction {
     int32_t SN = -1, obSN = -1;
     Double DR, UR;
     bool isExist();
-    instruction() { type = -1; }
+    instruction();
     instruction(int type, int SN, int obSN, bool twoCoredinate);
     instruction(int type, int SN, int BlockDR, int BlockUR, int option);
     instruction(int type, int SN, Double DR, Double UR);
     instruction(int type, int SN, int option);
+    void Serialize(FArchive*arc);
 };
 
 struct ins {
-    int32_t g_id = 0;
+    int g_id;
     std::queue<instruction> instructions;
     QMutex lock;
 };
 
+struct InstructionForSave{
+    instruction ins;
+    int64_t frame;
+    int playerID;
+    void Serialize(FArchive*arc);
+    bool operator< (const InstructionForSave&oth)const;
+};
 struct tagTerrain {
     int32_t height;
     int32_t type;

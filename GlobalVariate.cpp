@@ -6,7 +6,9 @@
 #include <QFileInfo>
 #include <QDebug>
 #include <QtWidgets>
+#include <chrono>
 #include<iostream>
+#include <random>
 
 using namespace std;
 
@@ -522,6 +524,10 @@ bool instruction::isExist() {
     return type != -1;
 }
 
+instruction::instruction() {
+    type=-1;
+}
+
 instruction::instruction(int type,int SN, int obSN , bool twoCoredinate){
     this->SN = SN;
     this->obSN = obSN;
@@ -550,6 +556,52 @@ instruction::instruction(int type,int SN,int option){
     this->self=g_Object[SN];
     this->option=option;
 }
+
+void instruction::Serialize(FArchive *arc)
+{
+    arc->Serialize(type);
+    arc->Serialize(SN);
+    switch (type) {
+    case INS_HUMANMOVE:
+    {
+        arc->Serialize(DR.raw_);
+        arc->Serialize(UR.raw_);
+    }
+        break;
+    case INS_HUMANACTION:
+    {
+        arc->Serialize(obSN);
+    }
+        break;
+    case INS_HUMANBUILD:
+    {
+        arc->Serialize(BlockDR);
+        arc->Serialize(BlockUR);
+        arc->Serialize(option);
+    }
+        break;
+    case INS_BUILDINGACTION:
+    {
+         arc->Serialize(option);
+    }
+        break;
+    case INS_PINPOINT_STRIKE:
+    {
+        arc->Serialize(DR.raw_);
+        arc->Serialize(UR.raw_);
+    }
+        break;
+    default:
+        cerr<<"Can't Serialize the instruction type!This might be a bug and report it;"<<endl;
+        break;
+    }
+    //如果是读，要小心点
+    if(arc->IsRead()){
+        this->self=g_Object[SN];
+        this->obj=g_Object[obSN];
+    }
+}
+
 
 int sgn(Double __x)
 {
@@ -714,6 +766,19 @@ void ParseArguments(const QApplication&app){
         }else{
             qWarning() << "invalid map rotate degrees, expected 0/90/180/270:" << parser.value("rotate");
         }
+    }
+
+    // 未指定 -rotate 时随机方向，与是否通过 -map 指定地图无关；
+    // 显式 -rotate（包括 0）始终优先。
+    if(!parser.isSet("rotate")){
+        const unsigned seed = static_cast<unsigned>(
+            std::chrono::high_resolution_clock::now().time_since_epoch().count());
+        std::mt19937 gen(seed);
+        std::uniform_int_distribution<int> dis(0, 3);
+        const int rotations[] = {0, 90, 180, 270};
+        const int degrees = rotations[dis(gen)];
+        RuntimeConfig_setMapRotationDegrees(degrees);
+        qInfo() << "random map rotation selected:" << degrees;
     }
 }
 //Json化一个Map
@@ -1272,4 +1337,17 @@ void ReadConfig()
     ApplyRuntimeConfigFromJson(config);
 
 
+}
+
+void InstructionForSave::Serialize(FArchive *arc)
+{
+    arc->Serialize(frame);
+    arc->Serialize(playerID);
+    arc->Serialize(ins);
+}
+
+bool InstructionForSave::operator< (const InstructionForSave &oth) const
+{
+    if(oth.frame==frame)return ins.id<oth.ins.id;
+    return frame<oth.frame;
 }

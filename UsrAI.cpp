@@ -2194,4 +2194,6 @@ void Mgr::update(const tagInfo& info)
     runBuild();
 
     runDestroy();
+
+    CommitInstruction();
 }

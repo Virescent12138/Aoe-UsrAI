@@ -4,7 +4,10 @@
 #include <QSet>
 
 namespace {
-
+QString g_GameReplayFile;
+QString g_GameRecordFile;
+bool g_GameRecord=0;
+bool g_GameReplay=0;
 bool g_DeepRender=0;
 int g_GAME_LOSE_SEC = 0;
 bool g_IsExamining = false;
@@ -266,6 +269,7 @@ int g_BUILDING_MARKET_CRAFT_UPGRADE_FOOD = 0;
 int g_BUILDING_MARKET_CRAFT_UPGRADE_WOOD = 0;
 int g_TIME_BUILDING_MARKET_CRAFT_UPGRADE = 0;
 int g_BUILDING_MARKET_CRAFT_UPGRADE_ADDITION_DISSHOOT = 0;
+int g_BUILDING_MARKET_CRAFT_UPGRADE_ADDITION_CARRY = 0;
 int g_BUILDING_MARKET_CRAFT_UPGRADE_ADDITION_GATHERRATE = 0;
 int g_BUILDING_MARKET_PLOW_UPGRADE_FOOD = 0;
 int g_BUILDING_MARKET_PLOW_UPGRADE_WOOD = 0;
@@ -433,7 +437,7 @@ Double g_SPEED_SHIP = Double::Zero();
 int g_VISION_SHIP = 0;
 int g_ATK_SHIP = 0;
 Double g_DIS_SHIP = Double::Zero();
-int g_INTERVAL_SHIP = 0;
+Double g_INTERVAL_SHIP = Double::Zero();
 int g_DEFCLOSE_SHIP = 0;
 int g_DEFSHOOT_SHIP = 0;
 int g_BLOOD_STONE_THROWER = 0;
@@ -442,7 +446,7 @@ int g_VISION_STONE_THROWER = 0;
 int g_ATK_STONE_THROWER = 0;
 Double g_DIS_STONE_THROWER = Double::Zero();
 Double g_DIS_MIN_STONE_THROWER = Double::Zero();
-int g_INTERVAL_STONE_THROWER = 0;
+Double g_INTERVAL_STONE_THROWER = Double::Zero();
 int g_DEFCLOSE_STONE_THROWER = 0;
 int g_DEFSHOOT_STONE_THROWER = 0;
 int g_BLOOD_PRIEST = 0;
@@ -1790,6 +1794,11 @@ int RuntimeConfig_BUILDING_MARKET_CRAFT_UPGRADE_ADDITION_DISSHOOT()
     return g_BUILDING_MARKET_CRAFT_UPGRADE_ADDITION_DISSHOOT;
 }
 
+int RuntimeConfig_BUILDING_MARKET_CRAFT_UPGRADE_ADDITION_CARRY()
+{
+    return g_BUILDING_MARKET_CRAFT_UPGRADE_ADDITION_CARRY;
+}
+
 int RuntimeConfig_BUILDING_MARKET_CRAFT_UPGRADE_ADDITION_GATHERRATE()
 {
     return g_BUILDING_MARKET_CRAFT_UPGRADE_ADDITION_GATHERRATE;
@@ -2625,7 +2634,7 @@ Double RuntimeConfig_DIS_SHIP()
     return g_DIS_SHIP;
 }
 
-int RuntimeConfig_INTERVAL_SHIP()
+Double RuntimeConfig_INTERVAL_SHIP()
 {
     return g_INTERVAL_SHIP;
 }
@@ -2670,7 +2679,7 @@ Double RuntimeConfig_DIS_MIN_STONE_THROWER()
     return g_DIS_MIN_STONE_THROWER;
 }
 
-int RuntimeConfig_INTERVAL_STONE_THROWER()
+Double RuntimeConfig_INTERVAL_STONE_THROWER()
 {
     return g_INTERVAL_STONE_THROWER;
 }
@@ -2899,8 +2908,32 @@ Double RuntimeConfig_MUSIC_VOLUME()
 bool RuntimeConfig_DeepRender(){
     return g_DeepRender;
 }
+
+bool RuntimeConfig_GameReplay(){
+    return g_GameReplay;
+}
+
+bool RuntimeConfig_GameRecord(){
+    return g_GameRecord;
+}
+
+QString RuntimeConfig_GameRecordFile()
+{
+    return g_GameRecordFile;
+}
+
+QString RuntimeConfig_GameReplayFile()
+{
+    return g_GameReplayFile;
+}
+
+
 void ApplyRuntimeConfigFromJson(const QJsonObject& config)
 {
+    g_GameRecordFile=config.value(QStringLiteral("GameRecordFile")).toString();
+    g_GameReplayFile=config.value(QStringLiteral("GameReplayFile")).toString();
+    g_GameRecord=config.value(QStringLiteral("GameRecord")).toBool();
+    g_GameReplay=config.value(QStringLiteral("GameReplay")).toBool();
     g_DeepRender=config.value(QStringLiteral("DeepRender")).toBool();
     g_GAME_LOSE_SEC = config.value(QStringLiteral("GAME_LOSE_SEC")).toInt();
     g_IsExamining = config.value(QStringLiteral("IsExamining")).toBool();
@@ -3162,6 +3195,7 @@ void ApplyRuntimeConfigFromJson(const QJsonObject& config)
     g_BUILDING_MARKET_CRAFT_UPGRADE_WOOD = config.value(QStringLiteral("BUILDING_MARKET_CRAFT_UPGRADE_WOOD")).toInt();
     g_TIME_BUILDING_MARKET_CRAFT_UPGRADE = config.value(QStringLiteral("TIME_BUILDING_MARKET_CRAFT_UPGRADE")).toInt();
     g_BUILDING_MARKET_CRAFT_UPGRADE_ADDITION_DISSHOOT = config.value(QStringLiteral("BUILDING_MARKET_CRAFT_UPGRADE_ADDITION_DISSHOOT")).toInt();
+    g_BUILDING_MARKET_CRAFT_UPGRADE_ADDITION_CARRY = config.value(QStringLiteral("BUILDING_MARKET_CRAFT_UPGRADE_ADDITION_CARRY")).toInt();
     g_BUILDING_MARKET_CRAFT_UPGRADE_ADDITION_GATHERRATE = config.value(QStringLiteral("BUILDING_MARKET_CRAFT_UPGRADE_ADDITION_GATHERRATE")).toInt();
     g_BUILDING_MARKET_PLOW_UPGRADE_FOOD = config.value(QStringLiteral("BUILDING_MARKET_PLOW_UPGRADE_FOOD")).toInt();
     g_BUILDING_MARKET_PLOW_UPGRADE_WOOD = config.value(QStringLiteral("BUILDING_MARKET_PLOW_UPGRADE_WOOD")).toInt();
@@ -3329,7 +3363,7 @@ void ApplyRuntimeConfigFromJson(const QJsonObject& config)
     g_VISION_SHIP = config.value(QStringLiteral("VISION_SHIP")).toInt();
     g_ATK_SHIP = config.value(QStringLiteral("ATK_SHIP")).toInt();
     g_DIS_SHIP = Double::FromDouble(config.value(QStringLiteral("DIS_SHIP")).toDouble());
-    g_INTERVAL_SHIP = config.value(QStringLiteral("INTERVAL_SHIP")).toInt();
+    g_INTERVAL_SHIP = Double::FromDouble(config.value(QStringLiteral("INTERVAL_SHIP")).toDouble());
     g_DEFCLOSE_SHIP = config.value(QStringLiteral("DEFCLOSE_SHIP")).toInt();
     g_DEFSHOOT_SHIP = config.value(QStringLiteral("DEFSHOOT_SHIP")).toInt();
     g_BLOOD_STONE_THROWER = config.value(QStringLiteral("BLOOD_STONE_THROWER")).toInt();
@@ -3338,7 +3372,7 @@ void ApplyRuntimeConfigFromJson(const QJsonObject& config)
     g_ATK_STONE_THROWER = config.value(QStringLiteral("ATK_STONE_THROWER")).toInt();
     g_DIS_STONE_THROWER = Double::FromDouble(config.value(QStringLiteral("DIS_STONE_THROWER")).toDouble());
     g_DIS_MIN_STONE_THROWER = Double::FromDouble(config.value(QStringLiteral("DIS_MIN_STONE_THROWER")).toDouble());
-    g_INTERVAL_STONE_THROWER = config.value(QStringLiteral("INTERVAL_STONE_THROWER")).toInt();
+    g_INTERVAL_STONE_THROWER = Double::FromDouble(config.value(QStringLiteral("INTERVAL_STONE_THROWER")).toDouble());
     g_DEFCLOSE_STONE_THROWER = config.value(QStringLiteral("DEFCLOSE_STONE_THROWER")).toInt();
     g_DEFSHOOT_STONE_THROWER = config.value(QStringLiteral("DEFSHOOT_STONE_THROWER")).toInt();
     g_BLOOD_PRIEST = config.value(QStringLiteral("BLOOD_PRIEST")).toInt();
@@ -3398,4 +3432,6 @@ void RuntimeConfig_setOffScreen(bool v) { g_OffScreen = v; }
 void RuntimeConfig_setINITIAL_FREQUENCY(int v) { g_INITIAL_FREQUENCY = v; }
 void RuntimeConfig_setFixedMapFile(const QString& v) { g_FixedMapFile = v; }
 void RuntimeConfig_setMapRotationDegrees(int v) { g_MapRotationDegrees = v; }
+
+
 

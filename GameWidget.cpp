@@ -114,9 +114,6 @@ void GameWidget::paintEvent(QPaintEvent *)
                 if(pix){
                     painter.drawPixmap(x,y,w,h,*pix);
                 }
-                else{
-                     cout<<"AOE occurs bug!"<<endl;
-                }
                 if(showLine)
                 {
                     const int cellWidth = qMax(1, w - 1);
@@ -390,7 +387,7 @@ void GameWidget::paintEffect(QPainter &painter)
     for(auto*missile:missiles){
         if(missile->isNeedDelete())continue;
         Double dr=missile->getViewDR(),ur=missile->getViewUR();
-        data.push_back({dr,ur,g_frame,int(Rand.nextRaw()%trail_effect.size())});
+        data.push_back({dr,ur,g_frame,Rand.nextRaw()%trail_effect.size()});
     }
     //开始绘制
     for(auto itr=data.begin();itr!=data.end();){

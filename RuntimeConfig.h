@@ -786,6 +786,9 @@ int RuntimeConfig_TIME_BUILDING_MARKET_CRAFT_UPGRADE();
 int RuntimeConfig_BUILDING_MARKET_CRAFT_UPGRADE_ADDITION_DISSHOOT();
 #define BUILDING_MARKET_CRAFT_UPGRADE_ADDITION_DISSHOOT (RuntimeConfig_BUILDING_MARKET_CRAFT_UPGRADE_ADDITION_DISSHOOT())
 
+int RuntimeConfig_BUILDING_MARKET_CRAFT_UPGRADE_ADDITION_CARRY();
+#define BUILDING_MARKET_CRAFT_UPGRADE_ADDITION_CARRY (RuntimeConfig_BUILDING_MARKET_CRAFT_UPGRADE_ADDITION_CARRY())
+
 int RuntimeConfig_BUILDING_MARKET_CRAFT_UPGRADE_ADDITION_GATHERRATE();
 #define BUILDING_MARKET_CRAFT_UPGRADE_ADDITION_GATHERRATE (RuntimeConfig_BUILDING_MARKET_CRAFT_UPGRADE_ADDITION_GATHERRATE())
 
@@ -1287,7 +1290,7 @@ int RuntimeConfig_ATK_SHIP();
 Double RuntimeConfig_DIS_SHIP();
 #define DIS_SHIP (RuntimeConfig_DIS_SHIP())
 
-int RuntimeConfig_INTERVAL_SHIP();
+Double RuntimeConfig_INTERVAL_SHIP();
 #define INTERVAL_SHIP (RuntimeConfig_INTERVAL_SHIP())
 
 int RuntimeConfig_DEFCLOSE_SHIP();
@@ -1314,7 +1317,7 @@ Double RuntimeConfig_DIS_STONE_THROWER();
 Double RuntimeConfig_DIS_MIN_STONE_THROWER();
 #define DIS_MIN_STONE_THROWER (RuntimeConfig_DIS_MIN_STONE_THROWER())
 
-int RuntimeConfig_INTERVAL_STONE_THROWER();
+Double RuntimeConfig_INTERVAL_STONE_THROWER();
 #define INTERVAL_STONE_THROWER (RuntimeConfig_INTERVAL_STONE_THROWER())
 
 int RuntimeConfig_DEFCLOSE_STONE_THROWER();
@@ -1451,6 +1454,19 @@ bool RuntimeConfig_isPlayerBuildingDisabled(int buildingNum);
 
 bool RuntimeConfig_DeepRender();
 #define DeepRender (RuntimeConfig_DeepRender())
+
+bool RuntimeConfig_GameReplay();
+#define GameReplay (RuntimeConfig_GameReplay())
+
+QString RuntimeConfig_GameReplayFile();
+#define GameReplayFile (RuntimeConfig_GameReplayFile())
+
+bool RuntimeConfig_GameRecord();
+#define GameRecord (RuntimeConfig_GameRecord())
+
+QString RuntimeConfig_GameRecordFile();
+#define GameRecordFile (RuntimeConfig_GameRecordFile())
+
 void ApplyRuntimeConfigFromJson(const QJsonObject& config);
 
 #endif // RUNTIMECONFIG_H

@@ -103,6 +103,12 @@ void LineArea::onRightMouseDown()
     }
 }
 
+LineAreaData *LineArea::GetPosIn(Double dr, Double ur)
+{
+
+}
+
+
 string LineArea::Name()
 {
     return "Line";
