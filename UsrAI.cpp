@@ -229,26 +229,19 @@ void Mgr::makeFrame(const tagInfo& info)
         mark(b);
     }
 
-    fieldBuild(nav, base, buildingSize(BUILDING_CENTER), FIELD_WALK); // 子系统构建
+    fieldBuild(nav, base, buildingSize(BUILDING_CENTER));  // 子系统构建
     gatherFrame();
     buildFrame();
     farmFrame();
     prodFrame();
 }
 
-void Mgr::fieldBuild(std::vector<int>& out, const Pos& src, int size, FieldMode mode, std::vector<int>* prev)
+// 现在只剩 nav 一个使用者: 采集落脚点、建筑选址、后撤方向都靠它。
+// 探图与行军的路径已经全部交给引擎, 不再需要威胁场和进攻场。
+void Mgr::fieldBuild(std::vector<int>& out, const Pos& src, int size)
 {
     out.assign((size_t)MAP_L * MAP_U, -1);
-    if (prev) prev->assign((size_t)MAP_L * MAP_U, -1);
     if (!inMap(src.dr, src.ur)) return;
-
-    auto passable = [&](int dr, int ur)
-    {
-        if (mode == FIELD_ATTACK) return marchable(dr, ur);
-        if (!walkable(dr, ur)) return false;
-        if (mode == FIELD_SAFE) return threatAt(dr, ur) <= 0;
-        return true;
-    };
 
     std::queue<Pos> q;
     for (int i = src.dr; i < src.dr + size; i++)
@@ -268,11 +261,10 @@ void Mgr::fieldBuild(std::vector<int>& out, const Pos& src, int size, FieldMode 
         for (int k = 0; k < 8; k++)
         {
             const Pos n = {c.dr + dx[k], c.ur + dy[k]};
-            if (!passable(n.dr, n.ur) || out[cellIdx(n.dr, n.ur)] >= 0) continue;
-            if (dx[k] && dy[k] && (!passable(c.dr + dx[k], c.ur) || !passable(c.dr, c.ur + dy[k]))) continue;
+            if (!walkable(n.dr, n.ur) || out[cellIdx(n.dr, n.ur)] >= 0) continue;
+            if (dx[k] && dy[k] && (!walkable(c.dr + dx[k], c.ur) || !walkable(c.dr, c.ur + dy[k]))) continue;
 
             out[cellIdx(n.dr, n.ur)] = nd;
-            if (prev) (*prev)[cellIdx(n.dr, n.ur)] = cellIdx(c.dr, c.ur);
             q.push(n);
         }
     }
@@ -542,10 +534,8 @@ void Mgr::gatherFrame()
         GatherSpot s;
         s.sn = x.r->SN;
         s.stand = stand;
-        s.kind = x.k;
         s.cost = x.cost;
         s.rate = gatherRate(x.k, x.cost);
-        s.held = x.held;
 
         pools[x.k].spots.push_back(s);
         selected.insert(s.sn);
@@ -896,7 +886,6 @@ Pos Mgr::findSpot(int type)
 {
     std::vector<int> costMap(MAP_L * MAP_U, 0);
     const int size = buildingSize(type);
-    const int baseLen = buildingSize(BUILDING_CENTER);
 
     auto placeable = [&](int dr, int ur)
     {
@@ -1277,9 +1266,6 @@ void Mgr::runDestroy()
     }
 }
 
-void Mgr::floodThreat(const Pos& from, bool avoidThreat)
-{ fieldBuild(scoutDist, from, 1, avoidThreat ? FIELD_SAFE : FIELD_WALK, &scoutPrev); }
-
 int Mgr::wpGain(const Pos& p) const
 {
     int sum = 0;
@@ -1293,26 +1279,13 @@ int Mgr::wpGain(const Pos& p) const
     return sum;
 }
 
-bool Mgr::nearestStand(const Pos& p, int r, Pos& out) const
-{
-    double best = 0;
-    out = {-1, -1};
-    for (int i = max(0, p.dr - r); i <= min(MAP_L - 1, p.dr + r); i++)
-        for (int j = max(0, p.ur - r); j <= min(MAP_U - 1, p.ur + r); j++)
-        {
-            if (scoutDist[cellIdx(i, j)] < 0 || !walkable(i, j)) continue;
-            const double d = dis({i, j}, p);
-            if (out.dr >= 0 && d >= best) continue;
-            best = d;
-            out = {i, j};
-        }
-    return out.dr >= 0;
-}
-
-int Mgr::pickWaypoint(Pos& stand) const
+// 目标就是路径点本身, 允许它在迷雾里。旧版要求"附近有已探明的可达落脚格",
+// 结果祭司只能沿迷雾边缘一圈圈啃, 这里直接按直线距离挑最近的有收益路径点。
+int Mgr::pickWaypoint(const Pos& here, Pos& stand) const
 {
     const int wp = MAP_L / SCOUT_VIEW + 1;
-    int bestIdx = -1, bestStep = 0;
+    int bestIdx = -1;
+    double bestDis = 0;
     stand = {-1, -1};
 
     for (int i = 0; i < wp; i++)
@@ -1323,17 +1296,15 @@ int Mgr::pickWaypoint(Pos& stand) const
 
             const Pos cw(min(i * SCOUT_VIEW, MAP_L - 1), min(j * SCOUT_VIEW, MAP_U - 1));
             if (enemyCorner(cw.dr, cw.ur)) continue;
+            if (threatAt(cw.dr, cw.ur) > 0) continue;  // 不再有路径安全检查, 只能在选点时避开
+            if (wpGain(cw) < SCOUT_MIN_GAIN) continue;
 
-            Pos st;
-            if (!nearestStand(cw, 5, st)) continue;  // 这一帧到不了
+            const double d = dis(here, cw);
+            if (bestIdx >= 0 && d >= bestDis) continue;
 
-            if (wpGain(st) < SCOUT_MIN_GAIN) continue;
-
-            const int step = scoutDist[cellIdx(st.dr, st.ur)];
-            if (bestIdx >= 0 && step >= bestStep) continue;
-            bestStep = step;
+            bestDis = d;
             bestIdx = idx;
-            stand = st;
+            stand = cw;
         }
     return bestIdx;
 }
@@ -1351,8 +1322,9 @@ int Mgr::homeETA(const Pos& here)
             if (d > far_) far_ = d, anchor = p;
         }
 
-    if (nearestStand(anchor, 4, home)) return scoutDist[cellIdx(home.dr, home.ur)] * 25;
-    return max(abs(here.dr - anchor.dr), abs(here.ur - anchor.ur)) * 25;
+    // 锚点落在建筑占的格子上没关系: 到不了引擎会停在旁边
+    home = anchor;
+    return (int)(dis(here, anchor) * SCOUT_DETOUR) * 25;
 }
 
 bool Mgr::isExplore(int eta) const
@@ -1365,109 +1337,52 @@ bool Mgr::isExplore(int eta) const
     return false;
 }
 
-void Mgr::buildRoute(const Pos& goal)
+Pos Mgr::fleeGoal(const Pos& here) const
 {
-    route.clear();
-    routeAt = 0;
-    routeFlee = false;
-    if (goal.dr < 0 || scoutDist[cellIdx(goal.dr, goal.ur)] < 0) return;
-
-    for (Pos p = goal;;)
+    const Pos p = bestCell([&](int i, int j) -> double
     {
-        route.push_back(p);
-        const int prev = scoutPrev[cellIdx(p.dr, p.ur)];
-        if (prev < 0) break;
-        p = cellPos(prev);
-    }
-    std::reverse(route.begin(), route.end());
+        if (!walkable(i, j) || threatAt(i, j) > 0) return -1.0;
+        return dis(here, Pos(i, j));
+    }, here, SCOUT_FLEE_R);
+
+    return p.dr >= 0 ? p : home;
 }
 
-bool Mgr::routeSafe() const
+bool Mgr::scoutGoto(const Pos& p, const Pos& here, bool idle)
 {
-    const int lim = min((int)route.size(), routeAt + SCOUT_VIEW);
-    for (int i = routeAt; i < lim; i++)
-        if (threatAt(route[i].dr, route[i].ur) > 0 || !walkable(route[i].dr, route[i].ur)) return false;
-    return true;
-}
+    if (p.dr < 0) return false;
 
-bool Mgr::followRoute(const Pos& here, bool idle)
-{
-    while (routeAt < (int)route.size() && route[routeAt].dr == here.dr && route[routeAt].ur == here.ur) routeAt++;
-    if (routeAt >= (int)route.size()) return false;
+    const double d = dis(here, p);
 
-    const Pos next = route[routeAt];
-    const int sd = next.dr - here.dr, su = next.ur - here.ur;  // 方向
-
-    if (sd < -1 || sd > 1 || su < -1 || su > 1) return false;  // 重新规划
-
-    int end = routeAt;
-    while (end + 1 < (int)route.size() && route[end + 1].dr - route[end].dr == sd &&
-           route[end + 1].ur - route[end].ur == su)
-        end++;
-
-    const int endCell = cellIdx(route[end].dr, route[end].ur);
-    if (endCell == routeSent)
+    if (!(p == scoutSent))
     {
-        if (!idle) return true;
-        route.clear();
+        scoutSent = p;
+        scoutBest = d;
+        scoutIdle = 0;
+        moveToCell(priest, p);
         return false;
     }
 
-    routeSent = endCell;
-    moveToCell(priest, route[end]);
-    return true;
-}
+    if (!idle) return false;  // 还在路上, 不要重复下令打断引擎
 
-Pos Mgr::fleeGoal() const
-{
-    Pos best = {-1, -1};
-    int bestThreat = 0, bestStep = 0;
-    for (int i = 0; i < MAP_L; i++)
-        for (int j = 0; j < MAP_U; j++)
-        {
-            const int step = scoutDist[cellIdx(i, j)];
-            if (step <= 0) continue;
-
-            const int t = threatAt(i, j);
-            if (best.dr >= 0 && (t > bestThreat || (t == bestThreat && step >= bestStep))) continue;
-            bestThreat = t;
-            bestStep = step;
-            best = {i, j};
-            if (!t && step == 1) return best;
-        }
-    return best;
-}
-
-bool Mgr::evade(const Pos& here, bool idle)
-{
-    if (threatAt(here.dr, here.ur) <= 0)
+    if (d < scoutBest - MOVE_GAIN)
     {
-        if (routeFlee) route.clear();
+        scoutBest = d;
+        scoutIdle = 0;
+        moveToCell(priest, p);
         return false;
     }
 
-    if (routeFlee && route.size())
-    {
-        const Pos& tail = route.back();
-        const bool goalOk = walkable(tail.dr, tail.ur) && threatAt(tail.dr, tail.ur) <= 0;
-        if (goalOk && followRoute(here, idle)) return true;
-        route.clear();
-    }
+    if (++scoutIdle >= SCOUT_RETRY) return true;
 
-    floodThreat(here, false);
-    const Pos goal = fleeGoal();
-    if (goal.dr < 0) return true;
-
-    buildRoute(goal);
-    routeFlee = true;
-    followRoute(here, idle);
-    return true;
+    moveToCell(priest, p);
+    return false;
 }
 
 void Mgr::runScout()
 {
     const tagArmy* unit = army(priest);
-    if (!unit) return;
+    if (!unit || base.dr < 0) return;
 
     const tagArmy& u = *unit;
     const Pos here = {u.BlockDR, u.BlockUR};
@@ -1481,67 +1396,56 @@ void Mgr::runScout()
         wpDone.assign(wp * wp, 0);
     }
 
-    if (evade(here, idle)) return;
+    const int eta = homeETA(here);  // 顺带把 home 定下来
 
-    if (gameFrame - lastRecordFrame >= SCOUT_STUCK && dis(Fhere, lastPos) >= BLOCKSIDELENGTH)
+    // 1. 避险: 站进威胁圈就直奔最近的安全格
+    if (threatAt(here.dr, here.ur) > 0)
     {
-        lastPos = Fhere;
-        lastRecordFrame = gameFrame;
-    }
-    else if (route.size() && gameFrame - lastRecordFrame >= SCOUT_STUCK)
-    {
-        if (goalWp >= 0) wpCooldown[goalWp] = gameFrame + SCOUT_COOLDOWN;
         goalWp = -1;
         goalStand = {-1, -1};
-        route.clear();
-        lastPos = Fhere;
-        lastRecordFrame = gameFrame;
-    }
-
-    floodThreat(here, true);
-
-    if (!isExplore(homeETA(here)))
-    {
-        if (!arrived && dis(Fhere, FloatPos(home)) < 5 * BLOCKSIDELENGTH) arrived = true;
-        if (arrived)
-        {
-            goalWp = -1;
-            goalStand = {-1, -1};
-            route.clear();
-            return;
-        }
-        goalWp = -1;
-        goalStand = home;
-        if (route.empty() || route.back().dr != home.dr || route.back().ur != home.ur) buildRoute(home);
-        followRoute(here, idle);
+        if (scoutGoto(fleeGoal(here), here, idle)) scoutSent = {-1, -1};
         return;
     }
 
-    arrived = false;
+    // 2. 回家躲波次。家必须回, 走不到就隔一会儿从头再试, 不能像路径点那样放弃
+    if (!isExplore(eta))
+    {
+        goalWp = -1;
+        goalStand = {-1, -1};
+        if (dis(Fhere, FloatPos(home)) < SCOUT_HOME_DONE * BLOCKSIDELENGTH) return;
+        if (scoutGoto(home, here, idle)) scoutSent = {-1, -1};
+        return;
+    }
+
+    // 3. 目标作废: 已经站到了, 或者顺路已经把它看光了
     if (goalWp >= 0)
     {
-        const bool reached = dis(Fhere, FloatPos(goalStand)) <= 2 * BLOCKSIDELENGTH;
-        const bool ok = scoutDist[cellIdx(goalStand.dr, goalStand.ur)] >= 0 && wpGain(goalStand) >= SCOUT_MIN_GAIN;
-        if (reached) wpDone[goalWp] = 1;
-        if (reached || !ok)
+        const bool reached = dis(Fhere, FloatPos(goalStand)) <= SCOUT_DONE * BLOCKSIDELENGTH;
+        const bool blind = wpGain(goalStand) < SCOUT_MIN_GAIN;
+
+        if (reached || blind)
         {
+            wpDone[goalWp] = 1;
             goalWp = -1;
             goalStand = {-1, -1};
-            route.clear();
         }
     }
 
-    if (goalWp < 0 && (goalWp = pickWaypoint(goalStand)) < 0) return;
-
-    if (route.size())
+    // 4. 选目标
+    if (goalWp < 0)
     {
-        if (!routeSafe()) route.clear();
-        else if (followRoute(here, idle)) return;
-        else route.clear();
+        goalWp = pickWaypoint(here, goalStand);
+        if (goalWp < 0) return;
     }
 
-    buildRoute(goalStand);
-    followRoute(here, idle);
+    // 5. 下令; 确认过不去才冷却掉这个点位
+    if (scoutGoto(goalStand, here, idle))
+    {
+        wpCooldown[goalWp] = gameFrame + SCOUT_COOLDOWN;
+        goalWp = -1;
+        goalStand = {-1, -1};
+        scoutSent = {-1, -1};
+    }
 }
 
 void Mgr::defence()
@@ -1555,6 +1459,10 @@ void Mgr::defence()
 
     combat = !hostiles.empty();
     if (!combat) return;
+
+    // 祭司本帧交给 runDefenders 接管, 探图的移动令整条作废, 否则恢复探图时不会重发命令
+    scoutSent = {-1, -1};
+    scoutIdle = 0;
 
     runTower();
     runDefenders();
@@ -1719,13 +1627,6 @@ void Mgr::offenseUpdate()
         if (it.second->Type != BUILDING_SIEGE) tars.push_back(it.second->SN);
 }
 
-bool Mgr::marchable(int dr, int ur) const
-{
-    if (!inMap(dr, ur)) return false;
-    if (cell(dr, ur).type == MAPPATTERN_UNKNOWN) return true;
-    return walkable(dr, ur);
-}
-
 int Mgr::attackSelector(const tagArmy& u) const
 {
     int armyTar = -1, buildingTar = -1;
@@ -1782,14 +1683,31 @@ double Mgr::enemyGap(const FloatPos& at) const
     return best;
 }
 
-void Mgr::sendTo(const tagArmy& u, int slot, bool back)
-{
-    slotClaim(u, slot);
+FloatPos Mgr::marchGoal() const
+{ return siegePos.dr >= 0 ? centerOf(siegePos, BUILDING_SIEGE) : FloatPos(corner); }
 
-    const FloatPos at = slotAt(slot);
-    const double gap = dis(FloatPos(u.DR, u.UR), at) / BLOCKSIDELENGTH;
-    moveGoal[u.SN] = {slot, gap, 0, back};
+void Mgr::sendMove(const tagArmy& u, const FloatPos& at, int slot, bool back)
+{
+    if (slot >= 0) slotClaim(u, slot);
+
+    MoveOrder m;
+    m.at = at;
+    m.slot = slot;
+    m.back = back;
+    m.best = dis(FloatPos(u.DR, u.UR), at) / BLOCKSIDELENGTH;
+    moveGoal[u.SN] = m;
+
     HumanMove(u.SN, at.dr, at.ur);
+}
+
+void Mgr::marchTo(const tagArmy& u, const FloatPos& at)
+{
+    auto it = moveGoal.find(u.SN);
+    if (it != moveGoal.end() && it->second.slot < 0 && it->second.stuck &&
+        dis(it->second.at, at) < BLOCKSIDELENGTH)
+        return;
+
+    sendMove(u, at, -1, false);
 }
 
 int Mgr::slotOf(const tagArmy& u) const
@@ -1854,13 +1772,11 @@ void Mgr::slotClaim(const tagArmy& u, int slot)
         }
 }
 
-// 从 from 沿距离场下坡一格, 返回那一格里离 ref 最近的空闲子位; 无路可走返回 -1
-int Mgr::slotStep(const tagArmy& u, const Pos& from, const FloatPos& ref, bool retreat) const
+// 从 from 沿 nav 朝基地方向下坡一格, 返回那一格里离 ref 最近的空闲子位; 无路可走返回 -1。
+// 只有后撤需要这种逐格控制: 要精确停在"退出危险距离但仍在射程内"的位置。
+int Mgr::slotStep(const tagArmy& u, const Pos& from, const FloatPos& ref) const
 {
-    auto passable = [&](int dr, int ur) { return retreat ? walkable(dr, ur) : marchable(dr, ur); };
-
-    const std::vector<int>& field = retreat ? nav : atkField;
-    const int hereRank = field[cellIdx(from.dr, from.ur)];
+    const int hereRank = nav[cellIdx(from.dr, from.ur)];
     const int lo = u.Sort == AT_STONE_THROWER ? 4 : 0;
     const int hi = u.Sort == AT_STONE_THROWER ? 5 : 4;
 
@@ -1870,10 +1786,10 @@ int Mgr::slotStep(const tagArmy& u, const Pos& from, const FloatPos& ref, bool r
     for (int d = 0; d < 8; d++)
     {
         const Pos n = {from.dr + dx[d], from.ur + dy[d]};
-        if (!passable(n.dr, n.ur)) continue;
-        if (dx[d] && dy[d] && (!passable(from.dr + dx[d], from.ur) || !passable(from.dr, from.ur + dy[d]))) continue;
+        if (!walkable(n.dr, n.ur)) continue;
+        if (dx[d] && dy[d] && (!walkable(from.dr + dx[d], from.ur) || !walkable(from.dr, from.ur + dy[d]))) continue;
 
-        const int rank = field[cellIdx(n.dr, n.ur)];
+        const int rank = nav[cellIdx(n.dr, n.ur)];
         if (rank < 0 || (hereRank >= 0 && rank >= hereRank)) continue;
 
         for (int k = lo; k < hi; k++)
@@ -1892,20 +1808,19 @@ int Mgr::slotStep(const tagArmy& u, const Pos& from, const FloatPos& ref, bool r
     return best;
 }
 
-int Mgr::pickSlot(const tagArmy& u, bool retreat)
+int Mgr::pickSlot(const tagArmy& u)
 {
     const Pos here = {u.BlockDR, u.BlockUR};
     if (!inMap(here.dr, here.ur)) return -1;
 
-    int slot = slotStep(u, here, FloatPos(u.DR, u.UR), retreat);
+    int slot = slotStep(u, here, FloatPos(u.DR, u.UR));
     if (slot < 0) return -1;
 
     // 继续下坡; 中途某格挤满了就停在已经拿到的最远那个子位
-    const int steps = retreat ? RETREAT_STEP : MARCH_STEP;
     Pos cur = cellPos(slot / 5);
-    for (int n = 1; n < steps; n++)
+    for (int n = 1; n < RETREAT_STEP; n++)
     {
-        const int next = slotStep(u, cur, slotAt(slot), retreat);
+        const int next = slotStep(u, cur, slotAt(slot));
         if (next < 0) break;
 
         slot = next;
@@ -1949,25 +1864,40 @@ bool Mgr::keepMove(const tagArmy& u, bool interrupt)
     if (it == moveGoal.end()) return false;
 
     MoveOrder& m = it->second;
-    const double now = dis(FloatPos(u.DR, u.UR), slotAt(m.slot)) / BLOCKSIDELENGTH;
-
-    if ((!m.back && interrupt) || now <= MOVE_DONE)
+    if (!m.back && interrupt)
     {
         moveGoal.erase(it);
         return false;
     }
+    if (u.NowState != HUMAN_STATE_IDLE) return true;
 
-    if (now < m.gap - MOVE_GAIN)
+    const double d = dis(FloatPos(u.DR, u.UR), m.at) / BLOCKSIDELENGTH;
+
+    if (m.slot >= 0)
     {
-        m.gap = now;
+        // 后撤只有 RETREAT_STEP 格, 不值得重试: 差得远说明子位挤不进去, 拉黑后下一帧另选
+        if (d > MOVE_DONE) slotBlack[m.slot] = gameFrame + SLOT_COOLDOWN;
+
+        moveGoal.erase(it);
+        return false;
+    }
+
+    // 行军令: 有进展就重发继续推
+    if (d < m.best - MOVE_GAIN)
+    {
+        m.best = d;
         m.idle = 0;
+        HumanMove(u.SN, m.at.dr, m.at.ur);
         return true;
     }
 
-    if (++m.idle < MOVE_STUCK) return true;
+    if (++m.idle < MOVE_RETRY)
+    {
+        HumanMove(u.SN, m.at.dr, m.at.ur);
+        return true;
+    }
 
-    slotBlack[m.slot] = gameFrame + SLOT_COOLDOWN;
-    moveGoal.erase(it);
+    m.stuck = true;  // 确认过不去, 交给 marchTo 判断要不要换目标重发
     return false;
 }
 
@@ -1999,18 +1929,18 @@ void Mgr::runAssault()
         if (it != moveGoal.end()) slotClaim(*u, it->second.slot);
     }
 
-    // 越危险、越靠前的单位越先抢可用子位
+    // 越危险、越靠前的单位越先抢可用子位。没有进攻距离场之后直接用到攻城厂的直线格距排序
     std::sort(units.begin(), units.end(), [&](const tagArmy* a, const tagArmy* b)
     {
         const double ga = enemyGap(FloatPos(a->DR, a->UR)), gb = enemyGap(FloatPos(b->DR, b->UR));
         if (ga != gb) return ga < gb;
 
-        int fa = atkField[cellIdx(a->BlockDR, a->BlockUR)];
-        int fb = atkField[cellIdx(b->BlockDR, b->BlockUR)];
-        if (fa < 0) fa = 1 << 30;
-        if (fb < 0) fb = 1 << 30;
+        const int fa = siegeDis({a->BlockDR, a->BlockUR});
+        const int fb = siegeDis({b->BlockDR, b->BlockUR});
         return fa != fb ? fa < fb : a->SN < b->SN;
     });
+
+    const FloatPos march = marchGoal();
 
     for (const tagArmy* up : units)
     {
@@ -2020,22 +1950,25 @@ void Mgr::runAssault()
         const int tar = attackSelector(u);
 
         if (keepMove(u, gap < danger || tar >= 0)) continue;
+
+        // 1. 贴得太近先退, 逐格控制以免退出射程
         if (gap < danger)
         {
-            const int slot = pickSlot(u, true);
+            const int slot = pickSlot(u);
             if (slot >= 0)
             {
-                sendTo(u, slot, true);
+                sendMove(u, slotAt(slot), slot, true);
                 continue;
             }
         }
+        // 2. 有目标交给引擎自动进入射程
         if (tar >= 0)
         {
             if (u.WorkObjectSN != tar || u.NowState == HUMAN_STATE_IDLE) HumanAction(u.SN, tar);
             continue;
         }
-        const int slot = pickSlot(u, false);
-        if (slot >= 0) sendTo(u, slot, false);
+        // 3. 没目标就朝敌方老家行军, 寻路全部交给引擎
+        marchTo(u, march);
     }
 }
 
@@ -2058,34 +1991,27 @@ void Mgr::runAtkPriest()
     if (gap >= threshold && gap <= threshold + PRIEST_STAY_BAND) return;
 
     const bool retreat = gap < threshold;
-    Pos best = {-1, -1};
-    int bestScore = 0;
-
-    for (int i = 0; i < MAP_L; i++)
-        for (int j = 0; j < MAP_U; j++)
-        {
-            const Pos c = {i, j};
-            if (!walkable(i, j) || nav[cellIdx(i, j)] < 0 || siegeDis(c) < threshold) continue;
-
-            const int score = retreat ? dis(c, here) : siegeDis(c);
-            if (best.dr >= 0 && score >= bestScore) continue;
-
-            best = c;
-            bestScore = score;
-        }
+    const Pos best = bestCell([&](int i, int j) -> double
+    {
+        const Pos c = {i, j};
+        if (!walkable(i, j) || nav[cellIdx(i, j)] < 0 || siegeDis(c) < threshold) return -1.0;
+        return retreat ? dis(c, here) : siegeDis(c);
+    });
 
     if (p->NowState != HUMAN_STATE_WALKING && best.dr >= 0) moveToCell(p->SN, best);
 }
 
 void Mgr::offense()
 {
-    if (base.dr >= 0 && corner.dr == -1)
+    if (base.dr < 0) return;
+
+    if (corner.dr == -1)
     {
         corner.dr = (base.dr * 2 / MAP_L) ? 0 : MAP_L - 1;
         corner.ur = (base.ur * 2 / MAP_U) ? 0 : MAP_U - 1;
     }
 
-    if (base.dr >= 0 && siegeSN == -1)
+    if (siegeSN == -1)
         for (const auto& it : eBuildingMap)
             if (it.second->Type == BUILDING_SIEGE)
             {
@@ -2100,7 +2026,6 @@ void Mgr::offense()
     vanguardPick();
     if (!assaultOn && vanguard.empty()) return;
 
-    fieldBuild(atkField, siegePos.dr >= 0 ? siegePos : corner, 1, FIELD_ATTACK);
     runAssault();
     if (assaultOn) runAtkPriest();  // 祭司跟大部队走, 不跟提前批次
 }
@@ -2155,7 +2080,7 @@ void Mgr::strategy()
     }
     else
     {
-        if (!hasTech(BUILDING_RANGE_UPGRADE_COMPOSITE_BOW) || buildingCount(BUILDING_RANGE) <= 4) phase = 1;
+        if (!hasTech(BUILDING_RANGE_UPGRADE_COMPOSITE_BOW) || buildingCount(BUILDING_RANGE) <= 3) phase = 1;
         else phase = 2;
 
         wantBuilding(BUILDING_RANGE, 4, b_prio--);
@@ -2187,8 +2112,6 @@ void Mgr::update(const tagInfo& info)
 
     runProd();
 
-    // 采集先于建造取人: 两者都从 laborPool 拿, 但只有建造能 steal.
-    // 建造在前会把空闲池抽干后继续抢在岗采集工, 使 runGather 永远拿不到人。
     runFarm();
     runGather();
     runBuild();
