@@ -496,11 +496,6 @@ class Mgr : public UsrAI
 
     std::unordered_map<int, MoveOrder> moveGoal;
 
-    // 雷霆狮子
-    void killLions();
-    int lionWorker = -1;  // 固定一名清狮村民
-    int lionTarget = -1;  // 当前逐个击杀的狮子
-
     // 探图
     std::vector<int> scoutDist, scoutPrev;
     std::vector<Pos> route;  // 逐格的路径, 不含起点

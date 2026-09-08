@@ -2,96 +2,40 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "CMake: configure and build Debug",
+            "label": "qmake: build Debug",
             "type": "process",
-            "command": "${workspaceFolder}/.vscode/build-debug.bat",
-            "args": [],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "problemMatcher": [
-                "$msCompile"
-            ],
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            },
-            "presentation": {
-                "reveal": "always",
-                "focus": false,
-                "panel": "shared",
-                "showReuseMessage": false,
-                "clear": false
-            }
+            "command": "${workspaceFolder}/.vscode/build-debug-qmake.bat",
+            "options": { "cwd": "${workspaceFolder}" },
+            "problemMatcher": ["$gcc"],
+            "group": { "kind": "build", "isDefault": true },
+            "presentation": { "reveal": "always", "panel": "shared", "showReuseMessage": false }
         },
         {
-            "label": "CMake: configure and build Release",
+            "label": "qmake: build Release",
             "type": "process",
-            "command": "${workspaceFolder}/.vscode/build-release.bat",
-            "args": [],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "problemMatcher": [
-                "$msCompile"
-            ],
+            "command": "${workspaceFolder}/.vscode/build-release-qmake.bat",
+            "options": { "cwd": "${workspaceFolder}" },
+            "problemMatcher": ["$gcc"],
             "group": "build",
-            "presentation": {
-                "reveal": "always",
-                "focus": false,
-                "panel": "shared",
-                "showReuseMessage": false,
-                "clear": false
-            }
+            "presentation": { "reveal": "always", "panel": "shared", "showReuseMessage": false }
         },
         {
-            "label": "Aoe: build Release and run",
+            "label": "qmake: clean Debug",
             "type": "process",
-            "command": "${workspaceFolder}/.vscode/run-release.bat",
-            "args": [],
-            "dependsOn": "CMake: configure and build Release",
+            "command": "cmd",
+            "args": ["/c", "if exist Debug rmdir /s /q Debug"],
+            "options": { "cwd": "${workspaceFolder}" },
             "problemMatcher": [],
-            "presentation": {
-                "reveal": "silent",
-                "focus": false,
-                "panel": "shared",
-                "showReuseMessage": false,
-                "clear": false
-            }
+            "presentation": { "reveal": "silent", "panel": "shared", "showReuseMessage": false }
         },
         {
-            "label": "CMake: clean Debug directory",
+            "label": "qmake: clean Build",
             "type": "process",
-            "command": "${workspaceFolder}/.vscode/clean-debug.bat",
-            "args": [],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
+            "command": "cmd",
+            "args": ["/c", "if exist Build rmdir /s /q Build"],
+            "options": { "cwd": "${workspaceFolder}" },
             "problemMatcher": [],
-            "presentation": {
-                "reveal": "silent",
-                "focus": false,
-                "panel": "shared",
-                "showReuseMessage": false,
-                "clear": false
-            }
-        },
-        {
-            "label": "CMake: clean Build directory",
-            "type": "process",
-            "command": "${workspaceFolder}/.vscode/clean-build.bat",
-            "args": [],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "problemMatcher": [],
-            "presentation": {
-                "reveal": "silent",
-                "focus": false,
-                "panel": "shared",
-                "showReuseMessage": false,
-                "clear": false
-            }
+            "presentation": { "reveal": "silent", "panel": "shared", "showReuseMessage": false }
         }
     ]
 }
