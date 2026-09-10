@@ -10,7 +10,7 @@ static const int dy[8] = {1, 0, -1, 0, 1, -1, -1, 1};
 
 Mgr mgr;
 
-static long long hashKey(int type, int dr, int ur) // 哈希
+static long long hashKey(int type, int dr, int ur)  // 哈希
 { return ((long long)(type + 1) << 32) | (unsigned int)cellIdx(dr, ur); }
 
 void UsrAI::processData() { mgr.update(getInfo()); }
@@ -1110,7 +1110,6 @@ void Mgr::runBuild()
         const int type = order.second;
         const int wood = usedWood + buildWoodCost(type);
 
-        // 高优先级建筑付不起时，不再尝试后面的低优先级建筑
         if (left.wood < wood) break;
 
         const Pos spot = findSpot(type);
@@ -1279,8 +1278,6 @@ int Mgr::wpGain(const Pos& p) const
     return sum;
 }
 
-// 目标就是路径点本身, 允许它在迷雾里。旧版要求"附近有已探明的可达落脚格",
-// 结果祭司只能沿迷雾边缘一圈圈啃, 这里直接按直线距离挑最近的有收益路径点。
 int Mgr::pickWaypoint(const Pos& here, Pos& stand) const
 {
     const int wp = MAP_L / SCOUT_VIEW + 1;
@@ -1322,7 +1319,6 @@ int Mgr::homeETA(const Pos& here)
             if (d > far_) far_ = d, anchor = p;
         }
 
-    // 锚点落在建筑占的格子上没关系: 到不了引擎会停在旁边
     home = anchor;
     return (int)(dis(here, anchor) * SCOUT_DETOUR) * 25;
 }
@@ -1398,7 +1394,7 @@ void Mgr::runScout()
 
     const int eta = homeETA(here);  // 顺带把 home 定下来
 
-    // 1. 避险: 站进威胁圈就直奔最近的安全格
+    // 避险
     if (threatAt(here.dr, here.ur) > 0)
     {
         goalWp = -1;
@@ -1407,7 +1403,7 @@ void Mgr::runScout()
         return;
     }
 
-    // 2. 回家躲波次。家必须回, 走不到就隔一会儿从头再试, 不能像路径点那样放弃
+    // 回家躲波次
     if (!isExplore(eta))
     {
         goalWp = -1;
@@ -1417,7 +1413,7 @@ void Mgr::runScout()
         return;
     }
 
-    // 3. 目标作废: 已经站到了, 或者顺路已经把它看光了
+    // 目标作废
     if (goalWp >= 0)
     {
         const bool reached = dis(Fhere, FloatPos(goalStand)) <= SCOUT_DONE * BLOCKSIDELENGTH;
@@ -1431,14 +1427,14 @@ void Mgr::runScout()
         }
     }
 
-    // 4. 选目标
+    // 选目标
     if (goalWp < 0)
     {
         goalWp = pickWaypoint(here, goalStand);
         if (goalWp < 0) return;
     }
 
-    // 5. 下令; 确认过不去才冷却掉这个点位
+    // 下令
     if (scoutGoto(goalStand, here, idle))
     {
         wpCooldown[goalWp] = gameFrame + SCOUT_COOLDOWN;
@@ -1460,7 +1456,6 @@ void Mgr::defence()
     combat = !hostiles.empty();
     if (!combat) return;
 
-    // 祭司本帧交给 runDefenders 接管, 探图的移动令整条作废, 否则恢复探图时不会重发命令
     scoutSent = {-1, -1};
     scoutIdle = 0;
 
@@ -1665,10 +1660,10 @@ int Mgr::attackSelector(const tagArmy& u) const
 
 FloatPos Mgr::slotAt(int slot)
 {
-    static const double off[5][2] = {{0.25, 0.25}, {0.25, 0.75}, {0.75, 0.25}, {0.75, 0.75}, {0.5, 0.5}};
-    const Pos c = cellPos(slot / 5);
-    const int k = slot % 5;
-    return FloatPos((c.dr + off[k][0]) * BLOCKSIDELENGTH, (c.ur + off[k][1]) * BLOCKSIDELENGTH);
+    const int width = 2 * MAP_U;
+    const double side = (double)BLOCKSIDELENGTH / 2;
+    const int i = slot / width, j = slot % width;
+    return FloatPos((i + 0.5) * side, (j + 0.5) * side);
 }
 
 double Mgr::enemyGap(const FloatPos& at) const
@@ -1683,8 +1678,7 @@ double Mgr::enemyGap(const FloatPos& at) const
     return best;
 }
 
-FloatPos Mgr::marchGoal() const
-{ return siegePos.dr >= 0 ? centerOf(siegePos, BUILDING_SIEGE) : FloatPos(corner); }
+FloatPos Mgr::marchGoal() const { return siegePos.dr >= 0 ? centerOf(siegePos, BUILDING_SIEGE) : FloatPos(corner); }
 
 void Mgr::sendMove(const tagArmy& u, const FloatPos& at, int slot, bool back)
 {
@@ -1703,82 +1697,60 @@ void Mgr::sendMove(const tagArmy& u, const FloatPos& at, int slot, bool back)
 void Mgr::marchTo(const tagArmy& u, const FloatPos& at)
 {
     auto it = moveGoal.find(u.SN);
-    if (it != moveGoal.end() && it->second.slot < 0 && it->second.stuck &&
-        dis(it->second.at, at) < BLOCKSIDELENGTH)
+    if (it != moveGoal.end() && it->second.slot < 0 && it->second.stuck && dis(it->second.at, at) < BLOCKSIDELENGTH)
         return;
 
     sendMove(u, at, -1, false);
 }
 
-int Mgr::slotOf(const tagArmy& u) const
+vector<int> Mgr::slotOf(const tagArmy& u, const FloatPos& p) const
 {
-    const Pos here = {u.BlockDR, u.BlockUR};
-    if (!inMap(here.dr, here.ur)) return -1;
-    if (u.Sort == AT_STONE_THROWER) return slotIdx(here.dr, here.ur, 4);
-
-    int best = -1;
-    double bestGap = 0;
-    for (int k = 0; k < 4; k++)
+    vector<int> res;
+    static const double SLOTSIDELENGTH = (double)BLOCKSIDELENGTH / 2;
+    int centeri = p.dr / SLOTSIDELENGTH, centerj = p.ur / SLOTSIDELENGTH;
+    int len = u.Sort == AT_STONE_THROWER ? 1 : 0;
+    for (int i = centeri - len; i <= centeri + len; i++)
     {
-        const int slot = slotIdx(here.dr, here.ur, k);
-        const double d = dis(FloatPos(u.DR, u.UR), slotAt(slot));
-        if (best < 0 || d < bestGap)
+        for (int j = centerj - len; j <= centerj + len; j++)
         {
-            best = slot;
-            bestGap = d;
+            if (i < 0 || j < 0 || i >= 2 * MAP_L || j >= 2 * MAP_U) continue;
+            res.push_back(i * 2 * MAP_U + j);
         }
     }
-    return best;
+    return res;
 }
 
-bool Mgr::slotFree(int slot, const tagArmy& u) const
+bool Mgr::slotFree(int seed, const tagArmy& u) const
 {
-    if (slot < 0) return false;
-    if (slotBlack[slot] > gameFrame) return false;
+    if (seed < 0 || seed >= (int)slot.size()) return false;
+    if (slotBlack[seed] > gameFrame) return false;
 
-    if (u.Sort != AT_STONE_THROWER) return slotOwner[slot] < 0 || slotOwner[slot] == u.SN;
+    const int width = 2 * MAP_U;
+    const int ci = seed / width, cj = seed % width;
+    const int len = u.Sort == AT_STONE_THROWER ? 1 : 0;
 
-    const Pos c = cellPos(slot / 5);
-    for (int i = c.dr - 1; i <= c.dr + 1; i++)
-        for (int j = c.ur - 1; j <= c.ur + 1; j++)
+    for (int i = ci - len; i <= ci + len; i++)
+        for (int j = cj - len; j <= cj + len; j++)
         {
-            if (!inMap(i, j)) continue;
-            for (int k = 0; k < 5; k++)
-            {
-                const int owner = slotOwner[slotIdx(i, j, k)];
-                if (owner >= 0 && owner != u.SN) return false;
-            }
+            if (i < 0 || j < 0 || i >= 2 * MAP_L || j >= 2 * MAP_U) return false;
+            if (!walkable(i / 2, j / 2)) return false;
+
+            const int owner = slot[i * width + j];
+            if (owner >= 0 && owner != u.SN) return false;
         }
     return true;
 }
 
-void Mgr::slotClaim(const tagArmy& u, int slot)
+void Mgr::slotClaim(const tagArmy& u, int seed)
 {
-    if (slot < 0) return;
-
-    if (u.Sort != AT_STONE_THROWER)
-    {
-        if (slotOwner[slot] < 0) slotOwner[slot] = u.SN;
-        return;
-    }
-
-    const Pos c = cellPos(slot / 5);
-    for (int i = c.dr - 1; i <= c.dr + 1; i++)
-        for (int j = c.ur - 1; j <= c.ur + 1; j++)
-        {
-            if (!inMap(i, j)) continue;
-            for (int k = 0; k < 5; k++)
-                if (slotOwner[slotIdx(i, j, k)] < 0) slotOwner[slotIdx(i, j, k)] = u.SN;
-        }
+    if (seed < 0 || seed >= (int)slot.size()) return;
+    for (int i : slotOf(u, slotAt(seed))) slot[i] = u.SN;
 }
 
-// 从 from 沿 nav 朝基地方向下坡一格, 返回那一格里离 ref 最近的空闲子位; 无路可走返回 -1。
-// 只有后撤需要这种逐格控制: 要精确停在"退出危险距离但仍在射程内"的位置。
 int Mgr::slotStep(const tagArmy& u, const Pos& from, const FloatPos& ref) const
 {
     const int hereRank = nav[cellIdx(from.dr, from.ur)];
-    const int lo = u.Sort == AT_STONE_THROWER ? 4 : 0;
-    const int hi = u.Sort == AT_STONE_THROWER ? 5 : 4;
+    const int width = 2 * MAP_U;
 
     int best = -1, bestRank = 0;
     double bestMove = 0;
@@ -1792,18 +1764,19 @@ int Mgr::slotStep(const tagArmy& u, const Pos& from, const FloatPos& ref) const
         const int rank = nav[cellIdx(n.dr, n.ur)];
         if (rank < 0 || (hereRank >= 0 && rank >= hereRank)) continue;
 
-        for (int k = lo; k < hi; k++)
-        {
-            const int slot = slotIdx(n.dr, n.ur, k);
-            if (!slotFree(slot, u)) continue;
+        for (int i = 0; i < 2; i++)
+            for (int j = 0; j < 2; j++)
+            {
+                const int seed = (n.dr * 2 + i) * width + n.ur * 2 + j;
+                if (!slotFree(seed, u)) continue;
 
-            const double move = dis(ref, slotAt(slot)) / BLOCKSIDELENGTH;
-            if (best >= 0 && (rank > bestRank || (rank == bestRank && move >= bestMove))) continue;
+                const double move = dis(ref, slotAt(seed)) / BLOCKSIDELENGTH;
+                if (best >= 0 && (rank > bestRank || (rank == bestRank && move >= bestMove))) continue;
 
-            best = slot;
-            bestRank = rank;
-            bestMove = move;
-        }
+                best = seed;
+                bestRank = rank;
+                bestMove = move;
+            }
     }
     return best;
 }
@@ -1816,15 +1789,16 @@ int Mgr::pickSlot(const tagArmy& u)
     int slot = slotStep(u, here, FloatPos(u.DR, u.UR));
     if (slot < 0) return -1;
 
+    const int width = 2 * MAP_U;
     // 继续下坡; 中途某格挤满了就停在已经拿到的最远那个子位
-    Pos cur = cellPos(slot / 5);
+    Pos cur = {(slot / width) / 2, (slot % width) / 2};
     for (int n = 1; n < RETREAT_STEP; n++)
     {
         const int next = slotStep(u, cur, slotAt(slot));
         if (next < 0) break;
 
         slot = next;
-        cur = cellPos(slot / 5);
+        cur = {(slot / width) / 2, (slot % width) / 2};
     }
     return slot;
 }
@@ -1853,9 +1827,8 @@ void Mgr::vanguardPick()
         home.push_back(u.SN);
     }
 
-    // 按 SN 升序, 保证每帧挑出的守家名单一致
     std::sort(home.begin(), home.end());
-    for (size_t i = HOME_KEEP; i < home.size(); i++) vanguard.insert(home[i]);
+    for (int i = HOME_KEEP; i < home.size(); i++) vanguard.insert(home[i]);
 }
 
 bool Mgr::keepMove(const tagArmy& u, bool interrupt)
@@ -1914,27 +1887,22 @@ void Mgr::runAssault()
     }
     if (units.empty()) return;
 
-    slotOwner.assign((size_t)MAP_L * MAP_U * 5, -1);
-    if (slotBlack.size() != slotOwner.size()) slotBlack.assign(slotOwner.size(), 0);
+    slot.assign(MAP_L * MAP_U * 4, -1);
+    if (slotBlack.size() != slot.size()) slotBlack.assign(slot.size(), 0);
 
-    // 先占真实位置，再占在途目标
     for (const tagArmy* u : units)
-        if (u->Sort != AT_STONE_THROWER) slotClaim(*u, slotOf(*u));
-    for (const tagArmy* u : units)
-        if (u->Sort == AT_STONE_THROWER) slotClaim(*u, slotOf(*u));
-    for (const auto& it : eArmyMap) slotClaim(*it.second, slotOf(*it.second));
+    {
+        for (const auto& i : slotOf(*u, {u->DR, u->UR})) slot[i] = u->SN;
+        
+    }
     for (const tagArmy* u : units)
     {
         auto it = moveGoal.find(u->SN);
         if (it != moveGoal.end()) slotClaim(*u, it->second.slot);
     }
 
-    // 越危险、越靠前的单位越先抢可用子位。没有进攻距离场之后直接用到攻城厂的直线格距排序
     std::sort(units.begin(), units.end(), [&](const tagArmy* a, const tagArmy* b)
     {
-        const double ga = enemyGap(FloatPos(a->DR, a->UR)), gb = enemyGap(FloatPos(b->DR, b->UR));
-        if (ga != gb) return ga < gb;
-
         const int fa = siegeDis({a->BlockDR, a->BlockUR});
         const int fb = siegeDis({b->BlockDR, b->BlockUR});
         return fa != fb ? fa < fb : a->SN < b->SN;
@@ -1951,7 +1919,7 @@ void Mgr::runAssault()
 
         if (keepMove(u, gap < danger || tar >= 0)) continue;
 
-        // 1. 贴得太近先退, 逐格控制以免退出射程
+        // 贴得太近先退, 逐格控制以免退出射程
         if (gap < danger)
         {
             const int slot = pickSlot(u);
@@ -1961,13 +1929,13 @@ void Mgr::runAssault()
                 continue;
             }
         }
-        // 2. 有目标交给引擎自动进入射程
+        // 有目标交给引擎自动进入射程
         if (tar >= 0)
         {
             if (u.WorkObjectSN != tar || u.NowState == HUMAN_STATE_IDLE) HumanAction(u.SN, tar);
             continue;
         }
-        // 3. 没目标就朝敌方老家行军, 寻路全部交给引擎
+        // 没目标就朝敌方老家行军
         marchTo(u, march);
     }
 }

@@ -213,7 +213,7 @@ struct ProdOrder
 struct MoveOrder
 {
     FloatPos at;         // 目标点
-    int slot = -1;       // 占用的子位; 行军令不占位, 为 -1
+    int slot = -1;       // 占用的子位
     bool back = false;   // 后撤令不可被打断
     bool stuck = false;  // 行军令已确认过不去, 不再对同一目标重复下令
     double best = 0;     // 至今最接近目标的格距
@@ -475,12 +475,10 @@ class Mgr : public UsrAI
     void runAtkPriest();  // 祭司
     void clearRoad();     // 借过一下
 
-    // 每格 5 个子位: 0..3 是 0.25/0.75 的四个角, 4 是格心。只在交战后撤时用来防重叠
-    static int slotIdx(int dr, int ur, int k) { return cellIdx(dr, ur) * 5 + k; }
-    static FloatPos slotAt(int slot);
-    int slotOf(const tagArmy& u) const;                                          // 单位当前实际站的子位
-    void slotClaim(const tagArmy& u, int slot);                                  // 占位; 大体积单位连带封周围一圈
-    bool slotFree(int slot, const tagArmy& u) const;                             // 该单位放得下
+    static FloatPos slotAt(int slot);                                            // 单位当前实际站的子位
+    vector<int> slotOf(const tagArmy& u, const FloatPos& p) const;
+    void slotClaim(const tagArmy& u, int seed);                                  // 按单位占地占位
+    bool slotFree(int seed, const tagArmy& u) const;                             // 该单位放得下
     int slotStep(const tagArmy& u, const Pos& from, const FloatPos& ref) const;  // 沿 nav 后撤一格
     int pickSlot(const tagArmy& u);                                              // 连撤 RETREAT_STEP 格
 
@@ -498,7 +496,7 @@ class Mgr : public UsrAI
     std::unordered_set<int> vanguard;  // 提前出动的复合弓; assaultOn 之后清空并入大部队
 
     std::vector<int> tars;
-    std::vector<int> slotOwner;  // 子位 -> 占用者 SN, -1 为空
+    std::vector<int> slot;       // 2*MAP_L × 2*MAP_U 的1/4格占位图
     std::vector<int> slotBlack;  // 子位拉黑到期帧
 
     std::unordered_map<int, MoveOrder> moveGoal;
