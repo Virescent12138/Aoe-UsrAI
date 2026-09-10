@@ -1022,6 +1022,19 @@ void Core_List::object_Attack(Coordinate* object1, Coordinate* object2)
     object1->printer_ToBloodHaver((void**)&attacker);   //攻击者指针赋值(object1强制转换)
     if (object2) object2->printer_ToBloodHaver((void**)&attackee);   //受攻击者指针赋值(object2强制转换)
     object1->printer_ToMissile((void**)&missile);   //判断obect1是否为投射物
+
+    // 敌方单位进入对玩家的实际攻击阶段时临时显形；建筑一旦攻击玩家则永久保留。
+    // 这样主画面、小地图和用户AI敌军列表会使用同一可见状态。
+    if (object1->isPlayerControl() && object2 != NULL &&
+        object1->getPlayerRepresent() != NOWPLAYERREPRESENT &&
+        object2->getPlayerRepresent() == NOWPLAYERREPRESENT)
+    {
+        if (object1->getSort() == SORT_BUILDING)
+            object1->setExploredPermanently();
+        else
+            object1->visibleSomeTimes();
+    }
+
     bool isEnemyPriestConversion = object2 != NULL &&
         object1->getSort() == SORT_ARMY && object1->getNum() == AT_PRIEST &&
         object1->getPlayerRepresent() != object2->getPlayerRepresent();
@@ -1250,6 +1263,30 @@ void Core_List::object_Gather(Coordinate* object1, Coordinate* object2, relation
             relation.gatherNextFrame = g_frame + gatherIntervalFrames();
         }
     }
+}
+
+bool Core_List::isCoGatherer(Coordinate* object1, Coordinate* object2)
+{
+    if (object1 == NULL || object2 == NULL || object1 == object2) return false;
+    if (object1->getSort() != SORT_FARMER || object2->getSort() != SORT_FARMER) return false;
+    if (object1->getPlayerRepresent() != object2->getPlayerRepresent()) return false;
+
+    //使用find而非operator[]，避免为无关系的对象在动态表中插入空记录
+    auto iter1 = relate_AllObject.find(object1);
+    auto iter2 = relate_AllObject.find(object2);
+    if (iter1 == relate_AllObject.end() || iter2 == relate_AllObject.end()) return false;
+
+    const relation_Object& relation1 = iter1->second;
+    const relation_Object& relation2 = iter2->second;
+    if (!relation1.isExist || !relation2.isExist) return false;
+    if (relation1.relationAct != CoreEven_Gather || relation2.relationAct != CoreEven_Gather) return false;
+
+    //采集同一资源
+    if (relation1.goalObject != NULL && relation1.goalObject == relation2.goalObject) return true;
+    //向同一资源建筑运送
+    if (relation1.alterOb != NULL && relation1.alterOb == relation2.alterOb) return true;
+
+    return false;
 }
 
 void Core_List::object_Transport(Coordinate* object1, Coordinate* object2)

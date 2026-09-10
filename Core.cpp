@@ -43,6 +43,9 @@ void Core::gameUpdate()
     //
 
     updateByObject();
+    // 以当前仍然有效的单位对象为准校准人口，避免死亡动画期间的对象被重算为幽灵人口。
+    for (int playerIndex = 0; playerIndex < MAXPLAYER; ++playerIndex)
+        player[playerIndex]->recalculateHumanPopulation();
     loadRelationMap();
     //刷新视野并处理区域探索结果
     theMap->reset_ObjectExploreAndVisible();
@@ -108,6 +111,9 @@ void Core::updateByObject()
         //更新human子类的状态
         while (humaniter != humaniterEnd)
         {
+            // 临时显形属于所有玩家单位的公共状态，在核心层统一倒计时。
+            (*humaniter)->time_BeVisible();
+
             //如果当前对象需要变换行动状态，如从采集浆果->移动
             if ((*humaniter)->needTranState())
             {
@@ -242,6 +248,9 @@ void Core::updateByObject()
 
         while (builditer != builditerEnd)
         {
+            // 箭塔等建筑也可能因攻击玩家而临时显形。
+            (*builditer)->time_BeVisible();
+
             interactionList->conduct_Attacked(*builditer);
             if ((*builditer)->isDie() || ((*builditer)->getSort() == SORT_Building_Resource && !((Building_Resource*)(*builditer))->is_Surplus()))
             {
@@ -609,7 +618,7 @@ void Core::updateByPlayer(int id) {
         taginfo.buildings.push_back(building);
         for (int i = 0;i < NOWPLAYER;i++) {
             if (i == id) { continue; }
-            if (build->getexplored() == 1 || i != 0)
+            if (build->getexplored() == 1 || build->getvisible() == 1 || i != 0)
                 currentBuff[i].enemy_buildings.push_back(building.toEnemy());
         }
     }
@@ -956,8 +965,11 @@ void Core::logActionResult(int ret, Coordinate* self, Coordinate* obj, int actio
             " 开始在块坐标 " + desc + " 处建造 Building_" + QString::number(option);
         break;
     case INS_BUILDINGACTION: // 建筑行动
-        logMsg = " BuildAction:" + self->getChineseName() + " " + QString::number(self->getglobalNum()) +
-            " 执行行动 ACTION_" + QString::number(option);
+        if (desc.contains("删除"))
+            logMsg = " BuildAction:" + self->getChineseName() + " " + QString::number(self->getglobalNum()) + " " + desc;
+        else
+            logMsg = " BuildAction:" + self->getChineseName() + " " + QString::number(self->getglobalNum()) +
+                " 执行行动 ACTION_" + QString::number(option);
         break;
     case INS_PINPOINT_STRIKE:
         logMsg = " PinPoint_Strike:" + self->getChineseName() + " " + QString::number(self->getglobalNum()) +
@@ -1145,6 +1157,15 @@ int Core::handleBuildingAction(Coordinate* self, int option, int id)
 {
     int ret = ACTION_INVALID_SN;
     Building* buildOb = NULL;
+
+    // 与人物自杀保持一致：BuildingAction(buildingSN, buildingSN)
+    // 将建筑血量置零，后续由 updateByObject() 统一完成销毁、列表和计数清理。
+    // 建筑 SN 与普通行动编号不同，因此不会与 option == 0（暂停行动）冲突。
+    if (self->getSort() == SORT_BUILDING && option == self->getglobalNum()) {
+        ret = deleteSelf(self);
+        logActionResult(ret, self, NULL, INS_BUILDINGACTION, option, "被删除", id);
+        return ret;
+    }
 
     if (option == 0) {
         if (self->getSort() != SORT_BUILDING) {
@@ -1520,6 +1541,8 @@ void Core::judge_Crush()
                 /****当前取消移动物体之间的碰撞******/
                 if (!theMap->CanCrush(barrierOb))continue;
                 /****当前取消移动物体之间的碰撞******/
+                //同一玩家、采集同一资源的农民之间不判定碰撞，防止多人围采一堆资源时互相卡住
+                if (interactionList->isCoGatherer(judOb, barrierOb)) continue;
                 //判断碰撞，碰撞箱有重合
                 if (judOb->isCrash(barrierOb))
                 {
