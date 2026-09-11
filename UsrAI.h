@@ -517,5 +517,4 @@ class Mgr : public UsrAI
     int farmerTarget() const;  // 本帧村民目标数, 生产和自毁共用同一个口径
 };
 
-/*##########YOUR CODE ENDS HERE##########*/
 #endif  // USRAI_H
