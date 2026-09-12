@@ -2,26 +2,26 @@
     "version": 4,
     "configurations": [
         {
-            "name": "Win32 (MinGW Qt5)",
+            "name": "Win32 (MSVC Qt5)",
             "includePath": [
                 "${workspaceFolder}/**",
-                "D:/QT5/5.9.2/mingw53_32/include",
-                "D:/QT5/5.9.2/mingw53_32/include/QtCore",
-                "D:/QT5/5.9.2/mingw53_32/include/QtWidgets",
-                "D:/QT5/5.9.2/mingw53_32/include/QtGui",
-                "D:/QT5/5.9.2/mingw53_32/include/QtMultimedia",
-                "D:/QT5/5.9.2/mingw53_32/include/QtNetwork",
-                "D:/QT5/Tools/mingw530_32/lib/gcc/i686-w64-mingw32/5.3.0/include"
+                "D:/QT5/5.9.2/msvc2017_64/include",
+                "D:/QT5/5.9.2/msvc2017_64/include/QtCore",
+                "D:/QT5/5.9.2/msvc2017_64/include/QtWidgets",
+                "D:/QT5/5.9.2/msvc2017_64/include/QtGui",
+                "D:/QT5/5.9.2/msvc2017_64/include/QtMultimedia",
+                "D:/QT5/5.9.2/msvc2017_64/include/QtNetwork"
             ],
             "defines": [
                 "_DEBUG",
                 "UNICODE",
                 "_UNICODE"
             ],
-            "compilerPath": "D:/QT5/Tools/mingw530_32/bin/g++.exe",
+            "compilerPath": "D:/Microsoft Visual Studio/18/BuildTools/VC/Tools/MSVC/14.51.36231/bin/Hostx64/x64/cl.exe",
             "cStandard": "c17",
             "cppStandard": "c++14",
-            "intelliSenseMode": "windows-gcc-x86"
+            "intelliSenseMode": "windows-msvc-x64",
+            "configurationProvider": "ms-vscode.cmake-tools"
         }
     ]
 }

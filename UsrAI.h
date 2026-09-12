@@ -31,6 +31,8 @@ class UsrAI : public AI
     /*##########DO NOT MODIFY THE CODE IN THE CLASS##########*/
 };
 
+/*##########YOUR CODE BEGINS HERE##########*/
+
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -50,9 +52,9 @@ enum
 const int PLACE_ADJACENT = 100;  // 紧贴其它建筑
 const int PLACE_BONUS = -60;     // 落在该建筑理想距离带内
 const int PLACE_FAILED = 400;    // 之前建造失败过的地基, 按次数累加
-const int DEPOT_FAR = 12;        // 工作点离最近存放点超过这么多格产生智能仓储需求
+const int DEPOT_FAR = 8;         // 工作点离最近存放点超过这么多格产生智能仓储需求
 const int CREW_BUILD = 2;        // 一个工地派几个人
-const int CREW_FIX = 2;          // 修箭塔派几个人
+const int CREW_FIX = 1;          // 修箭塔派几个人
 
 // 侦察
 const int SCOUT_VIEW = 12;                                 // 侦察视野
@@ -85,7 +87,7 @@ const int FIX_TOWER_UNTIL = 25 * 60 * 15;  // 这之后不再修塔
 const int WAIT_BAND_IN = 22;               // 待命部队散开到离基地此距离以外
 const int WAIT_BAND_OUT = 26;              // 待命部队散开到离基地此距离以内
 const int PRIEST_STAY = 30;                // 祭司跟大部队时到攻城厂保持的格距
-const int PRIEST_STAY_BLIND = 45;          // 攻城厂尚未定位
+const int PRIEST_STAY_BLIND = 60;          // 攻城厂尚未定位
 const int PRIEST_STAY_BAND = 5;            // 落在 [STAY, STAY+BAND] 里就不再动
 
 // 经济参数
@@ -98,12 +100,15 @@ const double BASE_RATE_WOOD = 1.0;    // 木材, 个/秒
 const int FARM_PRIORITY = 90;         // 农田在建造队列里的优先级
 const int BUILD_WAIT = 25;            // 等地基出现的帧数
 const int POP_CAP = 50;               // 人口上限
-const int FARMER_MIN = 15;            // 村民数下限
-const int FARMER_MAX = 26;            // 村民数上限
-const int RES_RANGE = 60;             // 排除太远的食物位点
+const int FARMER_MIN = 16;            // 村民数下限
+const int FARMER_MAX = 20;            // 村民数上限
+const int RES_RANGE = 60;             // 离基地超过这么多格(直线)的资源不采
+const int RES_BLACK = 25 * 60;        // 确认过不去的资源点, 拉黑这么久
+const int GATHER_STUCK = 25 * 8;      // 连续这么多帧既没挪窝也没产出就判定卡死
+const double GATHER_MOVE = 0.3;       // 到资源的格距变化小于这个值视为没动
 
 // 各阶段人员比例, 顺序 木 食 金
-const int ECON_WEIGHT[3][3] = {{3, 7, 0}, {6, 3, 3}, {1, 4, 4}};
+const int ECON_WEIGHT[3][3] = {{5, 11, 0}, {10, 6, 4}, {2, 9, 9}};
 
 // 辅助结构
 struct Pos
@@ -177,9 +182,17 @@ enum FoodKind
 struct GatherSpot
 {
     int sn = -1;
-    Pos stand = {-1, -1};
-    double cost = 0;  // 落脚点到最近存放点的像素距离
-    double rate = 0;  // 综合搬运距离后的每秒产出
+    Pos at = {-1, -1};  // 资源自身所在格, 不要求可站人
+    double cost = 0;    // 资源到最近存放点的像素距离
+    double rate = 0;    // 综合搬运距离后的每秒产出
+};
+
+// 一条采集绑定的进度记录, 用来识别引擎层面过不去的资源点
+struct ResWatch
+{
+    int worker = -1;  // 当前绑定的村民, 换人就重新计时
+    double ref = 0;   // 上次判定"有动静"时村民到资源的格距
+    int idle = 0;     // 连续没动静的帧数
 };
 
 struct GatherPool
@@ -327,8 +340,8 @@ class Mgr : public UsrAI
     // 地形与位置判定
     const tagTerrain& cell(int dr, int ur) const { return (*theMap)[dr][ur]; }
     bool blocked(int dr, int ur) const { return blockCell[cellIdx(dr, ur)] != 0; }
-    bool valid(int dr, int ur) const;               // 地形是否允许建造
-    bool walkable(int dr, int ur) const;            // 是否可以行走
+    bool valid(int dr, int ur) const;                 // 地形是否允许建造
+    bool walkable(int dr, int ur) const;              // 是否可以行走
     bool canPlace(int dr, int ur, int size) const;  // size*size 的地基是否放得下
     bool enemyCorner(int dr, int ur) const;         // 与基地对角的那一象限
     int lockOf(int enemySN) const;                  // 该敌人锁着的我方SN, 没锁到我方返回 -1, 锁到祭司返回 -1
@@ -356,7 +369,7 @@ class Mgr : public UsrAI
 
     static int targetOf(const std::unordered_map<int, int>& jobs, int workerSN);  // target -> worker 的反查
     bool workerBusy(int sn) const;                                                // 已被某个岗位登记
-    bool workerReserved(int sn) const;  // 在专职岗位上(农田/工地/修塔/打狮子), 不许被抢
+    bool workerReserved(int sn) const;  // 在专职岗位上(农田/工地/修塔), 不许被抢
     void workerDrop(int sn);            // 从所有岗位解绑
 
     // 全局帧状态
@@ -377,9 +390,10 @@ class Mgr : public UsrAI
     std::vector<int> laborPool;  // 空闲人口
 
     // 采集
-    void gatherFrame();                                    // 重建仓储点与全部资源池, 清理失效绑定
-    void runGather();                                      // 按 desired 调整人口并下令
-    bool standCell(const tagResource* r, Pos& out) const;  // 采集占地分配
+    void gatherFrame();                          // 重建全部资源池, 清理失效绑定
+    void gatherWatch();                          // 巡检在途绑定, 把引擎过不去的资源点拉黑
+    bool reachable(const tagResource* r) const;  // 周围一圈有没有 nav 可达的落脚格
+    void runGather();                            // 按 desired 调整人口并下令
     double depotCost(const FloatPos& at, int depotType) const;
     void dropSpot(int workerSN, bool toFree);  // 解开一条绑定
 
@@ -395,8 +409,9 @@ class Mgr : public UsrAI
     void econPlan(int phase);
 
     GatherPool pools[RK_COUNT];
-    std::unordered_map<int, int> workerOfSpot;  // 资源SN -> 村民SN
-    std::vector<unsigned char> standTaken;      // 已被某个资源点占用的落脚格
+    std::unordered_map<int, int> workerOfSpot;   // 资源SN -> 村民SN
+    std::unordered_map<int, ResWatch> resWatch;  // 资源SN -> 该绑定的接近进度
+    std::unordered_map<int, int> resBlack;       // 资源SN -> 拉黑到期帧
 
     std::vector<int> farmList;                  // 已完工农田, 按单人产出降序
     std::unordered_map<int, int> farmToWorker;  // 农田SN -> 村民SN
@@ -517,4 +532,5 @@ class Mgr : public UsrAI
     int farmerTarget() const;  // 本帧村民目标数, 生产和自毁共用同一个口径
 };
 
+/*##########YOUR CODE ENDS HERE##########*/
 #endif  // USRAI_H

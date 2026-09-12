@@ -867,7 +867,7 @@ bool MainWidget::deleteEditorObject(Coordinate* object, bool refreshRuntime)
 
     auto finishDelete = [&]() {
         if (refreshRuntime) {
-            map->loadBarrierMap(true);
+            this->map->loadBarrierMap(true);
             ui->Game->update();
         }
         call_debugText("green", objectName.isEmpty() ? " 已删除对象"

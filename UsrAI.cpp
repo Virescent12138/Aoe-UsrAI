@@ -69,6 +69,10 @@ Stock actionCost(int action)
             c.meat = BUILDING_RANGE_UPGRADE_COMPOSITE_BOW_FOOD;
             c.wood = BUILDING_RANGE_UPGRADE_COMPOSITE_BOW_WOOD;
             break;
+        case BUILDING_MARKET_WOOD_UPGRADE:
+            c.meat = BUILDING_MARKET_WOOD_UPGRADE_FOOD;
+            c.wood = BUILDING_MARKET_WOOD_UPGRADE_WOOD;
+            break;
         default: break;
     }
     return c;
@@ -82,6 +86,7 @@ int actionHost(int action)
         case BUILDING_CENTER_UPGRADE: return BUILDING_CENTER;
         case BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN:
         case BUILDING_RANGE_UPGRADE_COMPOSITE_BOW: return BUILDING_RANGE;
+        case BUILDING_MARKET_WOOD_UPGRADE: return BUILDING_MARKET;
         default: return -1;
     }
 }
@@ -458,86 +463,101 @@ double Mgr::depotCost(const FloatPos& at, int depotType) const
     return best < 0 ? dis(at, baseF) : best;
 }
 
-bool Mgr::standCell(const tagResource* r, Pos& out) const
+// 一条采集绑定只要满足三条之一就算"活着": 刚换人、身上已经攒到东西、到资源的距离有变化。
+// 三条都不满足并持续 GATHER_STUCK 帧, 说明引擎把村民卡在半路了(靠近 -> 被挡 -> IDLE -> 重新靠近),
+// 这时把资源点拉黑, 让它下一帧退出资源池, 村民自然被解绑回空闲池。
+void Mgr::gatherWatch()
+{
+    for (auto it = resBlack.begin(); it != resBlack.end();)
+        if (gameFrame >= it->second) it = resBlack.erase(it);
+        else ++it;
+
+    // 资源没了、村民死了、或者这个人被抢去建造/修塔(workerDrop 已解绑)时, 记录一并作废
+    for (auto it = resWatch.begin(); it != resWatch.end();)
+    {
+        auto bind = workerOfSpot.find(it->first);
+        if (bind == workerOfSpot.end() || !resource(it->first) || !farmer(bind->second)) it = resWatch.erase(it);
+        else ++it;
+    }
+
+    for (const auto& bind : workerOfSpot)
+    {
+        const tagResource* r = resource(bind.first);
+        const tagFarmer* f = farmer(bind.second);
+        if (!r || !f) continue;
+
+        // 被改派去干别的活了, 这条记录作废。只认"指向另一个有效对象"的情况:
+        // 引擎在 IDLE 时可能把 WorkObjectSN 清成无效值, 那恰恰是要监视的卡死态, 不能当改派。
+        const int obj = f->WorkObjectSN;
+        if (obj != r->SN && (resource(obj) || building(obj) || farmer(obj)))
+        {
+            resWatch.erase(bind.first);
+            continue;
+        }
+
+        ResWatch& w = resWatch[bind.first];
+        const double d = dis(FloatPos(f->DR, f->UR), FloatPos(r->DR, r->UR)) / BLOCKSIDELENGTH;
+
+        if (w.worker != bind.second || f->Resource > 0 || std::fabs(d - w.ref) >= GATHER_MOVE)
+        {
+            w.worker = bind.second;
+            w.ref = d;
+            w.idle = 0;
+            continue;
+        }
+
+        if (++w.idle < GATHER_STUCK) continue;
+
+        resBlack[bind.first] = gameFrame + RES_BLACK;
+        resWatch.erase(bind.first);
+    }
+}
+
+// 树木与金矿有碰撞箱, 林子/矿脉内部的那些被同类围死, 引擎根本过不去。这里只判"周围一圈有没有
+// nav 可达的落脚格", 把最外层挑出来; 但不再给落脚格做独占分配, 谁站哪一格交给引擎。
+// 浆果与尸体没有碰撞箱, 走到格子上就能采, 不做这道筛。
+bool Mgr::reachable(const tagResource* r) const
 {
     const int size = resourceSize(r->Type);
-    const Pos anchor = resourceCell(r);
-    const int _dr = anchor.dr, _ur = anchor.ur;
+    const Pos a = resourceCell(r);
 
-    out = {-1, -1};
-    for (int i = _dr - 1; i <= _dr + size; i++)
-        for (int j = _ur - 1; j <= _ur + size; j++)
+    for (int i = a.dr - 1; i <= a.dr + size; i++)
+        for (int j = a.ur - 1; j <= a.ur + size; j++)
         {
-            if (i >= _dr && i < _dr + size && j >= _ur && j < _ur + size) continue;
-            if (!inMap(i, j)) continue;
-            const int idx = cellIdx(i, j);
-            if (nav[idx] == -1 || standTaken[idx] || !walkable(i, j)) continue;
-
-            out = {i, j};
-            return true;
+            if (i >= a.dr && i < a.dr + size && j >= a.ur && j < a.ur + size) continue;
+            if (!inMap(i, j) || !walkable(i, j)) continue;
+            if (nav[cellIdx(i, j)] >= 0) return true;
         }
     return false;
 }
 
+// 类型、拉黑、直线距离三道筛; 有碰撞箱的再加一道可达性。
 void Mgr::gatherFrame()
 {
-    for (int k = 0; k < RK_COUNT; k++) pools[k].spots.clear();
-    standTaken.assign((size_t)MAP_L * MAP_U, 0);
+    gatherWatch();  // 必须先于建池, 本帧拉黑才能立即生效
 
-    // 第一阶段: 只做类型与运距筛选, 不碰落脚格。
-    struct Cand
-    {
-        const tagResource* r;
-        ResKind k;
-        double cost;
-        bool held;
-    };
-    std::vector<Cand> cand;
-    cand.reserve(resourceMap.size());
+    for (int k = 0; k < RK_COUNT; k++) pools[k].spots.clear();
+
+    std::unordered_set<int> selected;
+    selected.reserve(resourceMap.size());
 
     for (const auto& it : resourceMap)
     {
         const tagResource* r = it.second;
         const ResKind k = kindOf(r->Type);
-        if (k == RK_COUNT) continue;
+        if (k == RK_COUNT || resBlack.count(r->SN)) continue;
 
-        auto bind = workerOfSpot.find(r->SN);
-        const bool held = bind != workerOfSpot.end() && farmer(bind->second);
-
-        const double cost = depotCost(FloatPos(r->DR, r->UR), k == RK_BUSH ? BUILDING_GRANARY : BUILDING_STOCK);
-        cand.push_back({r, k, cost, held});
-    }
-
-    // 已经有人在采的排最前, 保证它在抢落脚格时不会输给新岗位。
-    std::sort(cand.begin(), cand.end(), [](const Cand& a, const Cand& b)
-    {
-        if (a.held != b.held) return a.held;
-        if (a.cost != b.cost) return a.cost < b.cost;
-        return a.r->SN < b.r->SN;
-    });
-
-    // 第二阶段: 按上面的确定顺序分配落脚格, 顺带用落脚格判运距。
-    std::unordered_set<int> selected;
-    selected.reserve(cand.size());
-
-    for (const Cand& x : cand)
-    {
-        Pos stand;
-        if (!standCell(x.r, stand)) continue;  // 没有站立点的
-
-        // 资源格自身被 blockCell 占住, nav 恒为 -1, 必须拿落脚格来判范围
-        const int step = nav[cellIdx(stand.dr, stand.ur)];
-        if (step < 0 || step > RES_RANGE) continue;
-
-        standTaken[cellIdx(stand.dr, stand.ur)] = 1;
+        const Pos at = resourceCell(r);
+        if (!inMap(at.dr, at.ur) || dis(at, base) > RES_RANGE) continue;
+        if ((k == RK_WOOD || k == RK_GOLD) && !reachable(r)) continue;
 
         GatherSpot s;
-        s.sn = x.r->SN;
-        s.stand = stand;
-        s.cost = x.cost;
-        s.rate = gatherRate(x.k, x.cost);
+        s.sn = r->SN;
+        s.at = at;
+        s.cost = depotCost(FloatPos(r->DR, r->UR), k == RK_BUSH ? BUILDING_GRANARY : BUILDING_STOCK);
+        s.rate = gatherRate(k, s.cost);
 
-        pools[x.k].spots.push_back(s);
+        pools[k].spots.push_back(s);
         selected.insert(s.sn);
     }
 
@@ -546,7 +566,7 @@ void Mgr::gatherFrame()
         std::sort(pools[k].spots.begin(), pools[k].spots.end(), [](const GatherSpot& a, const GatherSpot& b)
         { return a.cost != b.cost ? a.cost < b.cost : a.sn < b.sn; });
 
-    // 资源消失、工人死亡或本帧没有落脚点时解除旧绑定; 不额外下令打断, 交给下一帧重新指派。
+    // 资源消失、工人死亡或本帧被拉黑时解除旧绑定; 不额外下令打断, 交给下一帧重新指派。
     for (auto it = workerOfSpot.begin(); it != workerOfSpot.end();)
     {
         if (farmer(it->second) && selected.count(it->first))
@@ -588,7 +608,7 @@ void Mgr::runGather()
             if (assigned >= target) break;
             if (workerOfSpot.count(s.sn)) continue;
 
-            const int sn = takeNearest(FloatPos(s.stand));
+            const int sn = takeNearest(FloatPos(s.at));
             if (sn < 0) break;
 
             workerOfSpot[s.sn] = sn;
@@ -876,10 +896,10 @@ void Mgr::depotWant(ResKind k, std::vector<Pos>& out) const
     {
         if (!workerOfSpot.count(s.sn)) continue;
         if (s.cost <= far_) continue;
-        if (depotCovered(depotType, s.stand) || !depotRoom(s.stand)) continue;
+        if (depotCovered(depotType, s.at) || !depotRoom(s.at)) continue;
         if (!anchor || s.cost > anchor->cost) anchor = &s;
     }
-    if (anchor) out.push_back(anchor->stand);
+    if (anchor) out.push_back(anchor->at);
 }
 
 Pos Mgr::findSpot(int type)
@@ -1891,10 +1911,7 @@ void Mgr::runAssault()
     if (slotBlack.size() != slot.size()) slotBlack.assign(slot.size(), 0);
 
     for (const tagArmy* u : units)
-    {
         for (const auto& i : slotOf(*u, {u->DR, u->UR})) slot[i] = u->SN;
-        
-    }
     for (const tagArmy* u : units)
     {
         auto it = moveGoal.find(u->SN);
@@ -1946,7 +1963,7 @@ void Mgr::runAtkPriest()
     const tagArmy* p = army(priest);
     if (!p) return;
 
-    if (siegeSN >= 0 && eArmyMap.size() <= 2 && eBuildingMap.size() <= 3)
+    if (siegeSN >= 0 && eArmyMap.size() <= 3 && eBuildingMap.size() <= 4)
     {
         if (p->WorkObjectSN != siegeSN) HumanAction(p->SN, siegeSN);
         return;
@@ -2048,13 +2065,17 @@ void Mgr::strategy()
     }
     else
     {
-        if (!hasTech(BUILDING_RANGE_UPGRADE_COMPOSITE_BOW) || buildingCount(BUILDING_RANGE) <= 3) phase = 1;
+        if (!hasTech(BUILDING_RANGE_UPGRADE_COMPOSITE_BOW) || buildingCount(BUILDING_RANGE) <= 4) phase = 1;
         else phase = 2;
 
         wantBuilding(BUILDING_RANGE, 4, b_prio--);
 
-        wantTech(BUILDING_RANGE_UPGRADE_COMPOSITE_BOW, e_prio--);
-        wantUnit(AT_COMPOSITE_BOWMAN, 40, e_prio--);
+        if(hasTech(BUILDING_MARKET_WOOD_UPGRADE) || runningTech.count(BUILDING_MARKET_WOOD_UPGRADE))
+        {
+            wantTech(BUILDING_RANGE_UPGRADE_COMPOSITE_BOW, e_prio--);
+            wantUnit(AT_COMPOSITE_BOWMAN, 40, e_prio--);
+        }
+        else wantTech(BUILDING_MARKET_WOOD_UPGRADE, e_prio--);
     }
 
     econPlan(phase);
@@ -2069,7 +2090,7 @@ void Mgr::update(const tagInfo& info)
     laborFrame();  // fixTower 会取人, 空闲池必须先于 defence 重建
 
     defence();
-    if (!combat) runScout();
+    if (!combat && !assaultOn) runScout();
     if (!combat && !assaultOn) clearRoad();
     offense();
 

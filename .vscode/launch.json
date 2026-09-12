@@ -3,55 +3,45 @@
     "configurations": [
         {
             "name": "Aoe Debug (F5)",
-            "type": "cppdbg",
+            "type": "cppvsdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/Debug/debug/newAOE.exe",
+            "program": "${workspaceFolder}/Debug/bin/aoe.exe",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
             "environment": [
                 {
                     "name": "PATH",
-                    "value": "D:\\QT5\\Tools\\mingw530_32\\bin;D:\\QT5\\5.9.2\\mingw53_32\\bin;${env:PATH}"
-                }
-            ],
-            "externalConsole": false,
-            "MIMode": "gdb",
-            "miDebuggerPath": "D:/QT5/Tools/mingw530_32/bin/gdb.exe",
-            "setupCommands": [
+                    "value": "D:\\QT5\\5.9.2\\msvc2017_64\\bin;${env:PATH}"
+                },
                 {
-                    "description": "Enable pretty-printing",
-                    "text": "-enable-pretty-printing",
-                    "ignoreFailures": true
+                    "name": "QT_PLUGIN_PATH",
+                    "value": "D:\\QT5\\5.9.2\\msvc2017_64\\plugins"
                 }
             ],
-            "preLaunchTask": "qmake: build Debug"
+            "console": "integratedTerminal",
+            "preLaunchTask": "CMake: configure and build Debug"
         },
         {
             "name": "Aoe Release (F6)",
-            "type": "cppdbg",
+            "type": "cppvsdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/Build/release/newAOE.exe",
+            "program": "${workspaceFolder}/Build/bin/aoe.exe",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
             "environment": [
                 {
                     "name": "PATH",
-                    "value": "D:\\QT5\\Tools\\mingw530_32\\bin;D:\\QT5\\5.9.2\\mingw53_32\\bin;${env:PATH}"
-                }
-            ],
-            "externalConsole": false,
-            "MIMode": "gdb",
-            "miDebuggerPath": "D:/QT5/Tools/mingw530_32/bin/gdb.exe",
-            "setupCommands": [
+                    "value": "D:\\QT5\\5.9.2\\msvc2017_64\\bin;${env:PATH}"
+                },
                 {
-                    "description": "Enable pretty-printing",
-                    "text": "-enable-pretty-printing",
-                    "ignoreFailures": true
+                    "name": "QT_PLUGIN_PATH",
+                    "value": "D:\\QT5\\5.9.2\\msvc2017_64\\plugins"
                 }
             ],
-            "preLaunchTask": "qmake: build Release"
+            "console": "integratedTerminal",
+            "preLaunchTask": "CMake: configure and build Release"
         }
     ]
 }

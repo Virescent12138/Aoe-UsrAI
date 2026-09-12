@@ -3,7 +3,6 @@
 #include <tuple>
 #include <unordered_map>
 #include <iostream>
-#include <bits/stdc++.h>
 #include <chrono>
 #include<vector>
 #include<array>
