@@ -80,9 +80,9 @@ const int SLOT_COOLDOWN = 50;              // 子位冷却
 const double MOVE_DONE = 0.2;              // 距目标子位小于这个格距即视为到位
 const int HOME_KEEP = 10;                  // 出动前, 基地附近至少留这么多复合弓守家
 const int HOME_RANGE = 40;                 // 算作"基地附近"的格距
-const int BELONG_CORNER = 50;              // 分隔攻守判据
-const int DEF_ALERT = 45;                  // 进到这个距离才算来袭波次
-const int TOWER_ALERT = 55;                // 提前点名范围
+const int BELONG_CORNER = 60;              // 分隔攻守判据
+const int DEF_ALERT = 50;                  // 进到这个距离才算来袭波次
+const int TOWER_ALERT = 60;                // 提前点名范围
 const int FIX_TOWER_UNTIL = 25 * 60 * 15;  // 这之后不再修塔
 const int WAIT_BAND_IN = 22;               // 待命部队散开到离基地此距离以外
 const int WAIT_BAND_OUT = 26;              // 待命部队散开到离基地此距离以内
@@ -108,7 +108,7 @@ const int GATHER_STUCK = 25 * 8;      // 连续这么多帧既没挪窝也没产
 const double GATHER_MOVE = 0.3;       // 到资源的格距变化小于这个值视为没动
 
 // 各阶段人员比例, 顺序 木 食 金
-const int ECON_WEIGHT[3][3] = {{5, 11, 0}, {8, 7, 5}, {2, 9, 9}};
+const int ECON_WEIGHT[3][3] = {{4, 6, 0}, {6, 3, 3}, {1, 4, 4}};
 
 // 辅助结构
 struct Pos

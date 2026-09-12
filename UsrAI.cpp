@@ -1949,7 +1949,7 @@ void Mgr::runAtkPriest()
     const tagArmy* p = army(priest);
     if (!p) return;
 
-    if (siegeSN >= 0 && eArmyMap.size() <= 3 && eBuildingMap.size() <= 4)
+    if (siegeSN >= 0 && eArmyMap.size() <= 1 && eBuildingMap.size() <= 3)
     {
         if (p->WorkObjectSN != siegeSN) HumanAction(p->SN, siegeSN);
         return;
