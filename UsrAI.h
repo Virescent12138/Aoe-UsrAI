@@ -108,7 +108,7 @@ const int GATHER_STUCK = 25 * 8;      // 连续这么多帧既没挪窝也没产
 const double GATHER_MOVE = 0.3;       // 到资源的格距变化小于这个值视为没动
 
 // 各阶段人员比例, 顺序 木 食 金
-const int ECON_WEIGHT[3][3] = {{5, 11, 0}, {10, 6, 4}, {2, 9, 9}};
+const int ECON_WEIGHT[3][3] = {{5, 11, 0}, {8, 7, 5}, {2, 9, 9}};
 
 // 辅助结构
 struct Pos
@@ -244,8 +244,6 @@ inline double dis(const T& a, const T& b)
     return std::sqrt(ddr * ddr + dur * dur);
 }
 
-// 按打分挑一格: score 返回负数表示排除, 否则越小越好。
-// radius < 0 扫全图, 否则只扫 around 周围的窗口。
 template <class F>
 inline Pos bestCell(F score, const Pos& around = Pos(0, 0), int radius = -1)
 {
@@ -274,7 +272,7 @@ inline double gatherRate(ResKind k, double dropDis)  // 农田传入 RK_COUNT
                                               BASE_RATE_FARM};
 
     double gatherSec = CARRY_LIMIT / rate[k];
-    double walkSec = 2.0 * dropDis / (HUMAN_SPEED * 25.0);
+    double walkSec = 2.0 * dropDis / ((double)HUMAN_SPEED * 25.0);
     return CARRY_LIMIT / (gatherSec + walkSec);
 }
 
