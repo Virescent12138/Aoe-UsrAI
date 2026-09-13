@@ -72,7 +72,6 @@ Stock actionCost(int action)
         case BUILDING_MARKET_WOOD_UPGRADE:
             c.meat = (int)BUILDING_MARKET_WOOD_UPGRADE_FOOD;
             c.wood = (int)BUILDING_MARKET_WOOD_UPGRADE_WOOD;
-            break;
         default: break;
     }
     return c;
@@ -241,6 +240,8 @@ void Mgr::makeFrame(const tagInfo& info)
     prodFrame();
 }
 
+// 现在只剩 nav 一个使用者: 采集落脚点、建筑选址、后撤方向都靠它。
+// 探图与行军的路径已经全部交给引擎, 不再需要威胁场和进攻场。
 void Mgr::fieldBuild(std::vector<int>& out, const Pos& src, int size)
 {
     out.assign((size_t)MAP_L * MAP_U, -1);
@@ -461,6 +462,9 @@ double Mgr::depotCost(const FloatPos& at, int depotType) const
     return best < 0 ? dis(at, baseF) : best;
 }
 
+// 一条采集绑定只要满足三条之一就算"活着": 刚换人、身上已经攒到东西、到资源的距离有变化。
+// 三条都不满足并持续 GATHER_STUCK 帧, 说明引擎把村民卡在半路了(靠近 -> 被挡 -> IDLE -> 重新靠近),
+// 这时把资源点拉黑, 让它下一帧退出资源池, 村民自然被解绑回空闲池。
 void Mgr::gatherWatch()
 {
     for (auto it = resBlack.begin(); it != resBlack.end();)
@@ -481,6 +485,8 @@ void Mgr::gatherWatch()
         const tagFarmer* f = farmer(bind.second);
         if (!r || !f) continue;
 
+        // 被改派去干别的活了, 这条记录作废。只认"指向另一个有效对象"的情况:
+        // 引擎在 IDLE 时可能把 WorkObjectSN 清成无效值, 那恰恰是要监视的卡死态, 不能当改派。
         const int obj = f->WorkObjectSN;
         if (obj != r->SN && (resource(obj) || building(obj) || farmer(obj)))
         {
@@ -506,6 +512,9 @@ void Mgr::gatherWatch()
     }
 }
 
+// 树木与金矿有碰撞箱, 林子/矿脉内部的那些被同类围死, 引擎根本过不去。这里只判"周围一圈有没有
+// nav 可达的落脚格", 把最外层挑出来; 但不再给落脚格做独占分配, 谁站哪一格交给引擎。
+// 浆果与尸体没有碰撞箱, 走到格子上就能采, 不做这道筛。
 bool Mgr::reachable(const tagResource* r) const
 {
     const int size = resourceSize(r->Type);
@@ -521,9 +530,10 @@ bool Mgr::reachable(const tagResource* r) const
     return false;
 }
 
+// 类型、拉黑、直线距离三道筛; 有碰撞箱的再加一道可达性。
 void Mgr::gatherFrame()
 {
-    gatherWatch();
+    gatherWatch();  // 必须先于建池, 本帧拉黑才能立即生效
 
     for (int k = 0; k < RK_COUNT; k++) pools[k].spots.clear();
 
@@ -664,13 +674,13 @@ void Mgr::runFarm()
     }
 }
 
-int Mgr::econPick(int phase, const int count[E_COUNT], const int cap[E_COUNT]) const
+int Mgr::econPick(const int weight[E_COUNT], const int count[E_COUNT], const int cap[E_COUNT]) const
 {
     int pick = -1;
     double best = -1.0;
     for (int r = 0; r < E_COUNT; r++)
     {
-        const int w = ECON_WEIGHT[phase][r];
+        const int w = weight[r];
         if (w <= 0 || count[r] >= cap[r]) continue;
         const double score = (double)w / (count[r] + 1);
         if (score > best) best = score, pick = r;
@@ -735,11 +745,24 @@ bool Mgr::takeFood(FoodPlan& plan)
     return true;
 }
 
+// 本阶段已经排进队列、但还没花出去的资源。strategy() 里的 wantBuilding / wantUnit / wantTech
+// 都是"补到目标值"的差额语义 —— 已建成的、在建的、在产的都已经从差额里扣掉了, 所以这个量
+// 随着生产推进自然递减, 比固定的库存目标准确。
+Stock Mgr::phaseNeed() const
+{
+    Stock need;
+    for (const auto& order : builds) need.wood += buildWoodCost(order.second);
+    for (const ProdOrder& order : prods) need += actionCost(order.action);
+    return need;
+}
+
 void Mgr::econPlan(int phase)
 {
     for (int k = 0; k < RK_COUNT; k++) pools[k].desired = 0;
     farmDesired = wantFarm = 0;
 
+    // 按工地上实际站着的人预留, 而不是按 CREW_BUILD * 工地数.
+    // 后者会在开局把 8 个村民全部预扣掉, 使所有 desired 停在 0。
     int reserved = (int)fixCrew.size();
     for (const BuildSite& s : sites) reserved += (int)s.workers.size();
     reserved = min(reserved, (int)farmerMap.size() / 2);  // 建造最多占用一半人口
@@ -748,6 +771,23 @@ void Mgr::econPlan(int phase)
     if (pop <= 0) return;
 
     FoodPlan food = planFood();
+
+    // 默认沿用阶段固定比例; 二次调整: 库存已经盖住本阶段剩余需求的资源只留最低人手, 空出来的
+    // 人口由 econPick 按剩余权重自动均分到还缺的资源上。刚换阶段时队列里全是新需求, 自然回落
+    // 到默认比例。迟滞带防止需求在队列里一出一进就把人在岗位之间来回搬。
+    const Stock need = phaseNeed();
+    const int left[E_COUNT] = {need.wood, need.meat, need.gold};
+    const int have[E_COUNT] = {res.wood, res.meat, res.gold};
+
+    int weight[E_COUNT];
+    for (int r = 0; r < E_COUNT; r++)
+    {
+        if (have[r] >= left[r] + SURPLUS_BAND) econSurplus[r] = true;
+        else if (have[r] < left[r]) econSurplus[r] = false;
+
+        weight[r] = ECON_WEIGHT[phase][r];
+        if (weight[r] > 0 && econSurplus[r]) weight[r] = SURPLUS_WEIGHT;
+    }
 
     const int currentCap[E_COUNT] = {(int)pools[RK_WOOD].spots.size(), (int)food.jobs.size(),
                                      (int)pools[RK_GOLD].spots.size()};
@@ -760,7 +800,7 @@ void Mgr::econPlan(int phase)
     int raw[E_COUNT] = {};
     for (int n = 0; n < pop; n++)
     {
-        const int r = econPick(phase, raw, planCap);
+        const int r = econPick(weight, raw, planCap);
         if (r < 0) break;
         raw[r]++;
     }
@@ -782,7 +822,7 @@ void Mgr::econPlan(int phase)
     // 食物岗位不够装下战略目标时, 余下的人在本阶段非零权重资源之间补位。
     while (assigned < pop)
     {
-        const int r = econPick(phase, now, currentCap);
+        const int r = econPick(weight, now, currentCap);
         if (r < 0) break;
 
         if (r == E_FOOD)
@@ -1222,6 +1262,7 @@ void Mgr::wantTech(int action, int priority)
 
 void Mgr::runProd()
 {
+    // 原 multiset 逆序语义：priority 高优先；同 priority 时 action 大的先。
     std::sort(prods.begin(), prods.end(), [](const ProdOrder& a, const ProdOrder& b)
     {
         if (a.priority != b.priority) return a.priority > b.priority;
@@ -1246,7 +1287,7 @@ void Mgr::runProd()
 
 void Mgr::runDestroy()
 {
-    int excess = (int)farmerMap.size() - farmerTarget();
+    int excess = (int)farmerMap.size() - min(FARMER_MAX, POP_CAP - (int)armyMap.size() - 2);
     if (excess <= 0) return;
 
     std::vector<int> cand;
@@ -1949,7 +1990,7 @@ void Mgr::runAtkPriest()
     const tagArmy* p = army(priest);
     if (!p) return;
 
-    if (siegeSN >= 0 && eArmyMap.size() <= 1 && eBuildingMap.size() <= 3)
+    if (siegeSN >= 0 && eArmyMap.size() <= 3 && eBuildingMap.size() <= 2)
     {
         if (p->WorkObjectSN != siegeSN) HumanAction(p->SN, siegeSN);
         return;
@@ -1969,7 +2010,8 @@ void Mgr::runAtkPriest()
         return retreat ? dis(c, here) : siegeDis(c);
     });
 
-    if (p->NowState != HUMAN_STATE_WALKING && best.dr >= 0) moveToCell(p->SN, best);
+    const bool onSiege = siegeSN >= 0 && p->WorkObjectSN == siegeSN;
+    if ((p->NowState != HUMAN_STATE_WALKING || onSiege) && best.dr >= 0) moveToCell(p->SN, best);
 }
 
 void Mgr::offense()
@@ -2026,8 +2068,6 @@ void Mgr::clearRoad()
     }
 }
 
-int Mgr::farmerTarget() const { return std::max(FARMER_MIN, std::min(FARMER_MAX, POP_CAP - (int)armyMap.size() - 2)); }
-
 void Mgr::strategy()
 {
     int b_prio = 100;
@@ -2039,7 +2079,8 @@ void Mgr::strategy()
 
     wantDepot(BUILDING_STOCK, b_prio--);
     wantDepot(BUILDING_GRANARY, b_prio--);
-    wantUnit(AT_FARMER, farmerTarget(), e_prio--);
+
+    wantUnit(AT_FARMER, min(FARMER_MAX, POP_CAP - (int)armyMap.size() - 2), e_prio--);
 
     if (stage == CIVILIZATION_TOOLAGE)
     {
@@ -2048,20 +2089,17 @@ void Mgr::strategy()
         wantBuilding(BUILDING_RANGE, 1, b_prio--);
         wantBuilding(BUILDING_MARKET, 1, b_prio--);
         wantTech(BUILDING_CENTER_UPGRADE, e_prio--);
+        
     }
     else
     {
-        if (!hasTech(BUILDING_RANGE_UPGRADE_COMPOSITE_BOW) || buildingCount(BUILDING_RANGE) <= 4) phase = 1;
+        if (!hasTech(BUILDING_RANGE_UPGRADE_COMPOSITE_BOW) || buildingCount(BUILDING_RANGE) <= 3) phase = 1;
         else phase = 2;
 
-        wantBuilding(BUILDING_RANGE, 4, b_prio--);
+        wantBuilding(BUILDING_RANGE, 3, b_prio--);
 
-        if(hasTech(BUILDING_MARKET_WOOD_UPGRADE) || runningTech.count(BUILDING_MARKET_WOOD_UPGRADE))
-        {
-            wantTech(BUILDING_RANGE_UPGRADE_COMPOSITE_BOW, e_prio--);
-            wantUnit(AT_COMPOSITE_BOWMAN, 40, e_prio--);
-        }
-        else wantTech(BUILDING_MARKET_WOOD_UPGRADE, e_prio--);
+        wantTech(BUILDING_RANGE_UPGRADE_COMPOSITE_BOW, e_prio--);
+        wantUnit(AT_COMPOSITE_BOWMAN, 40, e_prio--);
     }
 
     econPlan(phase);
