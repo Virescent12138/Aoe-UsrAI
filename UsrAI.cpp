@@ -532,9 +532,6 @@ void Mgr::gatherWatch()
     }
 }
 
-// 树木与金矿有碰撞箱, 林子/矿脉内部的那些被同类围死, 引擎根本过不去。这里只判"周围一圈有没有
-// nav 可达的落脚格", 把最外层挑出来; 但不再给落脚格做独占分配, 谁站哪一格交给引擎。
-// 浆果与尸体没有碰撞箱, 走到格子上就能采, 不做这道筛。
 bool Mgr::reachable(const tagResource* r) const
 {
     const int size = resourceSize(r->Type);
@@ -1306,8 +1303,6 @@ Pos Mgr::findSpot(int type, int& firstWorker)
             }
     }
 
-    // 根据建筑类型特化。普通建筑不再把所有村民位置烘进热力图；
-    // 施工者距离在候选地基最终打分时直接计算，保证选址与派人使用同一个人。
     switch (type)
     {
         case BUILDING_FARM:
@@ -2292,8 +2287,6 @@ void Mgr::runAtkPriest()
 
     const Pos here = {p->BlockDR, p->BlockUR};
 
-    // 全程跟随复合弓前线：定位到 cover[2] 后方 PRIEST_COVER_GAP 格，随主力进退。
-    // 盲区(武器厂未定位)时 siegeDis 自动退化成到角落的距离, 复合弓推进/后撤祭司都会跟着走。
     std::vector<int> cover;
     for (const auto& it : armyMap)
     {
@@ -2458,10 +2451,6 @@ void Mgr::offense()
     vanguardPick();
     if (!assaultOn && vanguard.empty()) return;
 
-    // 三阶段主战斗仍保持:
-    // 1) 还有敌军 -> 弓兵/投石车继续处理敌军;
-    // 2) 敌军已清但武器厂未定位 -> 无视箭塔继续推进;
-    // 3) 敌军已清且武器厂已定位 -> 全军正式突破。祭司全程由 runAtkPriest 跟队, 到点由 priestRushOn 触发切武器厂。
     const bool breakNow = tars.empty() && siegeSN >= 0;
     if (breakNow != towerBreakOn)
     {
