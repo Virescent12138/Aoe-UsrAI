@@ -70,7 +70,7 @@ static ActionInfo actionRow(int key, bool byUnit)
         {BUILDING_MARKET_WOOD_UPGRADE,
          BUILDING_MARKET,
          AT_NONE,
-         {(int)BUILDING_MARKET_WOOD_UPGRADE_WOOD, (int)BUILDING_MARKET_WOOD_UPGRADE_FOOD, 0, 0}},
+         {(int)BUILDING_MARKET_WOOD_UPGRADE_WOOD, (int)BUILDING_MARKET_WOOD_UPGRADE_FOOD, 0, 0}}
     };
     for (const ActionInfo& a : table)
         if ((byUnit ? a.unit : a.action) == key) return a;
@@ -318,7 +318,7 @@ void Mgr::orderFrame()
         const FloatPos here = f ? FloatPos(f->DR, f->UR) : FloatPos(a->DR, a->UR);
         const double d = dis(here, o.at) / cellLen;
 
-        if (f)  // 村民带着资源、在干别的活或位置有变化都算有进展
+        if (f && o.target >= 0)  // 村民动作令: 带着资源、在干别的活或位置有变化都算有进展
         {
             const int obj = f->WorkObjectSN;
             if (f->Resource > 0 || (obj != o.target && locate(obj)) || fabs(d - o.best) >= GATHER_MOVE)
@@ -328,14 +328,14 @@ void Mgr::orderFrame()
             }
             else if (++o.idle >= GATHER_STUCK) o.stuck = true;
         }
-        else if (a->NowState == HUMAN_STATE_IDLE)
+        else if ((f ? f->NowState : a->NowState) == HUMAN_STATE_IDLE)
         {
             if (o.back)  // 后撤走完
             {
                 it = orders.erase(it);
                 continue;
             }
-            if (o.target < 0)  // 军队/祭司移动 IDLE 帧里靠近不足 MOVE_GAIN 计一次
+            if (o.target < 0)  // 移动令: IDLE 帧里靠近不足 MOVE_GAIN 计一次
             {
                 if (d < o.best - MOVE_GAIN)
                 {
@@ -351,21 +351,24 @@ void Mgr::orderFrame()
 
 void Mgr::orderMove(int sn, const FloatPos& at, bool back)
 {
-    const tagArmy* a = army(sn);
-    if (!a) return;
+    FloatPos here;
+    int state;
+    if (const tagArmy* a = army(sn)) here = FloatPos(a->DR, a->UR), state = a->NowState;
+    else if (const tagFarmer* f = farmer(sn)) here = FloatPos(f->DR, f->UR), state = f->NowState;
+    else return;
 
     auto it = orders.find(sn);
     if (it != orders.end() && it->second.target < 0 && it->second.back == back &&
         dis(it->second.at, at) < (double)BLOCKSIDELENGTH * 0.5)
     {
-        if (!it->second.stuck && a->NowState == HUMAN_STATE_IDLE) HumanMove(sn, at.dr, at.ur);
+        if (!it->second.stuck && state == HUMAN_STATE_IDLE) HumanMove(sn, at.dr, at.ur);
         return;
     }
 
     Order o;
     o.at = at;
     o.back = back;
-    o.best = dis(FloatPos(a->DR, a->UR), at) / (double)BLOCKSIDELENGTH;
+    o.best = dis(here, at) / (double)BLOCKSIDELENGTH;
     orders[sn] = o;
     HumanMove(sn, at.dr, at.ur);
 }
@@ -1854,7 +1857,8 @@ void Mgr::runAssault()
     for (const auto& it : armyMap)
     {
         const tagArmy* u = it.second;
-        if (u->Sort != AT_COMPOSITE_BOWMAN && u->Sort != AT_STONE_THROWER) continue;
+        if (u->Sort != AT_COMPOSITE_BOWMAN && u->Sort != AT_STONE_THROWER && u->Sort != AT_PRIEST) continue;
+        if (u->Sort == AT_PRIEST && priestRushOn) continue;  // 冲锋中的祭司只管武器厂
         if (!inMap(u->BlockDR, u->BlockUR)) continue;
         if (!assaultOn && !inVanguard(u->SN)) continue;
         units.push_back(u);
@@ -1872,7 +1876,9 @@ void Mgr::runAssault()
     unordered_set<int> retreat;
     for (const tagArmy* u : units)
     {
-        const double danger = u->Sort == AT_STONE_THROWER ? RETREAT_STONE : RETREAT_BOW;
+        const double danger = u->Sort == AT_STONE_THROWER ? RETREAT_STONE
+                              : u->Sort == AT_PRIEST      ? RETREAT_PRIEST
+                                                          : RETREAT_BOW;
         if (enemyGap(FloatPos(u->DR, u->UR)) < danger) retreat.insert(u->SN);
     }
     if (!retreat.empty())
@@ -1880,7 +1886,7 @@ void Mgr::runAssault()
         vector<const tagArmy*> triggers;
         triggers.reserve(retreat.size());
         for (const tagArmy* u : units)
-            if (retreat.count(u->SN)) triggers.push_back(u);
+            if (retreat.count(u->SN) && u->Sort != AT_PRIEST) triggers.push_back(u);  // 祭司的远距离后撤不带动弓兵
 
         for (const tagArmy* u : units)
         {
@@ -1917,56 +1923,6 @@ void Mgr::runAssault()
         if (tar >= 0) orderAction(u.SN, tar);  // 有目标就打断行军
         else orderMove(u.SN, march);
     }
-}
-
-void Mgr::runAtkPriest()
-{
-    if (!assaultOn) return;
-    const tagArmy* p = army(priest);
-    if (!p) return;
-
-    if (priestRushOn)
-    {
-        if (siegeSN >= 0) orderAction(p->SN, siegeSN);
-        return;
-    }
-
-    // 复合弓重心 -> 最近的可达格 -> 沿 nav 往基地方向退 PRIEST_BACK 格
-    double sumDR = 0, sumUR = 0;
-    int cnt = 0;
-    for (const auto& it : armyMap)
-    {
-        const tagArmy* u = it.second;
-        if (u->Sort != AT_COMPOSITE_BOWMAN || !inMap(u->BlockDR, u->BlockUR)) continue;
-        sumDR += u->DR;
-        sumUR += u->UR;
-        cnt++;
-    }
-    if (cnt == 0) return;
-
-    const FloatPos center(sumDR / cnt, sumUR / cnt);
-    Pos anchor = {-1, -1};
-    double bestDis = 0;
-    for (int i = 0; i < MAP_L; i++)
-        for (int j = 0; j < MAP_U; j++)
-        {
-            if (!walkable(i, j) || nav[cellIdx(i, j)] < 0) continue;
-
-            const double v = dis(FloatPos(Pos(i, j)), center);
-            if (anchor.dr >= 0 && v >= bestDis) continue;
-            anchor = {i, j};
-            bestDis = v;
-        }
-    if (anchor.dr < 0) return;
-
-    const Pos stand = retreatCell(anchor, PRIEST_BACK);  // 贴着基地退不动时就站锚点
-    FloatPos goal = FloatPos(stand.dr >= 0 ? stand : anchor);
-
-    auto it = orders.find(p->SN);
-    if (it != orders.end() && it->second.target < 0 && !it->second.back &&
-        dis(it->second.at, goal) < PRIEST_REPATH * (double)BLOCKSIDELENGTH)
-        goal = it->second.at;  // 重心小幅漂移不改令
-    orderMove(p->SN, goal);
 }
 
 void Mgr::runTowerBreak()
@@ -2081,7 +2037,7 @@ void Mgr::offense()
     }
 
     runAssault();
-    if (assaultOn) runAtkPriest();
+    if (assaultOn && priestRushOn && siegeSN >= 0) orderAction(priest, siegeSN);
 }
 
 void Mgr::clearRoad()
@@ -2130,15 +2086,21 @@ void Mgr::strategy()
     wantDepot(BUILDING_STOCK, b_prio--);
     wantDepot(BUILDING_GRANARY, b_prio--);
 
-    wantUnit(AT_FARMER, min(FARMER_MAX, POP_CAP - (int)armyMap.size() - 2), e_prio--);
-
     if (stage == CIVILIZATION_TOOLAGE)
     {
         phase = 0;
-        wantBuilding(BUILDING_ARMYCAMP, 1, b_prio--);
-        wantBuilding(BUILDING_RANGE, 1, b_prio--);
         wantBuilding(BUILDING_MARKET, 1, b_prio--);
-        wantTech(BUILDING_CENTER_UPGRADE, e_prio--);
+        wantTech(BUILDING_MARKET_WOOD_UPGRADE, e_prio--);
+
+        // 伐木科技开始研究后再走兵营/靶场/升级
+        const bool woodTech = hasTech(BUILDING_MARKET_WOOD_UPGRADE) || runningTech.count(BUILDING_MARKET_WOOD_UPGRADE);
+        if (woodTech)
+        {
+            wantBuilding(BUILDING_ARMYCAMP, 1, b_prio--);
+            wantBuilding(BUILDING_RANGE, 1, b_prio--);
+            wantTech(BUILDING_CENTER_UPGRADE, e_prio--);
+            wantUnit(AT_FARMER, min(FARMER_MAX, POP_CAP - (int)armyMap.size() - 2), e_prio--);
+        }
     }
     else
     {
@@ -2146,6 +2108,8 @@ void Mgr::strategy()
         else phase = 2;
 
         wantBuilding(BUILDING_RANGE, 3, b_prio--);
+
+        wantUnit(AT_FARMER, min(FARMER_MAX, POP_CAP - (int)armyMap.size() - 2), e_prio--);
 
         wantTech(BUILDING_RANGE_UPGRADE_COMPOSITE_BOW, e_prio--);
         wantUnit(AT_COMPOSITE_BOWMAN, 40, e_prio--);
@@ -2162,22 +2126,35 @@ void Mgr::update(const tagInfo& info)
     laborFrame();
 
     defence();
-    runHunt();  // strategy/econPlan 再规划剩余经济人口
+    const bool farmerMarch = gameFrame >= FARMER_MARCH_FRAME;
+    if (!farmerMarch) runHunt();  // strategy/econPlan 再规划剩余经济人口
     if (!combat && !assaultOn) runScout();
     if (!combat && !assaultOn) clearRoad();
     offense();
 
-    strategy();  // econPlan 在这里定下各岗位人数
+    if (farmerMarch)  // 停止经济, 村民全体跟进, 不再恢复
+    {
+        const FloatPos goal = marchGoal();
+        for (const auto& it : farmerMap)
+        {
+            dropDuty(it.first, false);
+            orderMove(it.first, goal);
+        }
+    }
+    else
+    {
+        strategy();  // econPlan 在这里定下各岗位人数
 
-    laborRelease();
-    laborFrame();
+        laborRelease();
+        laborFrame();
 
-    runProd();
-    runBuild();
-    laborFrame();
-    runEconomy();
+        runProd();
+        runBuild();
+        laborFrame();
+        runEconomy();
 
-    runDestroy();
+        runDestroy();
+    }
 
     CommitInstruction();
 }

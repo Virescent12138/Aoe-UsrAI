@@ -68,21 +68,21 @@ const int MOVE_RETRY = 25;                                 // 军队/祭司移�
 const double MOVE_GAIN = 0.5;                              // 两次 IDLE 之间至少靠近这么多格才算有进展
 
 // 总攻
-const int ASSAULT_FRAME = 25 * 60 * 15.3;  // 发动进攻
-const double RETREAT_BOW = 4.0;            // 敌人进到这个格距就后撤
-const double RETREAT_STONE = 6.0;          // 敌人进到这个格距就后撤
-const int RETREAT_STEP = 2;                // 单次后撤沿 nav 走这么多格
-const int RETREAT_GROUP = 2;               // 触发后撤时, 周围这么多格内的己方一起走
-const int HOME_KEEP = 10;                  // 出动前, 基地附近至少留这么多复合弓守家
-const int HOME_RANGE = 40;                 // 算作"基地附近"的格距
-const int BELONG_CORNER = 60;              // 分隔攻守判据
-const int DEF_ALERT = 45;                  // 进到这个距离才算来袭波次
-const int TOWER_ALERT = 55;                // 提前点名范围
-const int FIX_TOWER_UNTIL = 25 * 60 * 15;  // 这之后不再修塔
-const int WAIT_BAND_IN = 22;               // 待命部队散开到离基地此距离以外
-const int WAIT_BAND_OUT = 26;              // 待命部队散开到离基地此距离以内
-const int PRIEST_BACK = 6;                 // 祭司站在复合弓重心沿 nav 往基地方向这么多格
-const int PRIEST_REPATH = 2;               // 新站位离当前移动目标不足这么多格时不改令
+const int ASSAULT_FRAME = 25 * 60 * 15.3;                // 发动进攻
+const int FARMER_MARCH_FRAME = ASSAULT_FRAME + 25 * 50;  // 此后停止经济, 村民全体跟进
+const double RETREAT_BOW = 4.0;                          // 敌人进到这个格距就后撤
+const double RETREAT_STONE = 6.0;                        // 敌人进到这个格距就后撤
+const double RETREAT_PRIEST = 9.0;                       // 祭司的后撤格距
+const int RETREAT_STEP = 2;                              // 单次后撤沿 nav 走这么多格
+const int RETREAT_GROUP = 2;                             // 触发后撤时, 周围这么多格内的己方一起走
+const int HOME_KEEP = 10;                                // 出动前, 基地附近至少留这么多复合弓守家
+const int HOME_RANGE = 40;                               // 算作"基地附近"的格距
+const int BELONG_CORNER = 60;                            // 分隔攻守判据
+const int DEF_ALERT = 45;                                // 进到这个距离才算来袭波次
+const int TOWER_ALERT = 55;                              // 提前点名范围
+const int FIX_TOWER_UNTIL = 25 * 60 * 15;                // 这之后不再修塔
+const int WAIT_BAND_IN = 22;                             // 待命部队散开到离基地此距离以外
+const int WAIT_BAND_OUT = 26;                            // 待命部队散开到离基地此距离以内
 
 // 经济参数
 const int CARRY_LIMIT = 10;           // 村民荷载
@@ -95,7 +95,7 @@ const int FARM_PRIORITY = 90;         // 农田在建造队列里的优先级
 const int BUILD_WAIT = 25;            // 等地基出现的帧数
 const int POP_CAP = 50;               // 人口上限
 const int FARMER_MAX = 20;            // 村民数上限
-const int RES_RANGE = 50;             // 有效资源的范围
+const int RES_RANGE = 40;             // 有效资源的范围
 const int HUNT_CLUSTER = 10;          // 打猎聚类限制
 const int CREW_HUNT = 2;              // 打猎人数
 const int RES_BLACK = 25 * 40;        // 无效资源点,拉黑这么久
@@ -333,9 +333,10 @@ class Mgr : public UsrAI
     void ringAdd(std::vector<int>& g, const Pos& around, int size, int cost, int inner, int outer);  // bfs环带变体
 
     // 统一命令层
-    void orderFrame();                                              // 清理失效命令, 更新进展与卡死标记
-    void orderMove(int sn, const FloatPos& at, bool back = false);  // 同目标不重发, 仅在 IDLE 且未卡死时补发
-    void orderAction(int sn, int target);                           // 已在执行同一目标则不重发; 建筑按 Project 去重
+    void orderFrame();  // 清理失效命令, 更新进展与卡死标记
+    void orderMove(int sn, const FloatPos& at,
+                   bool back = false);     // 军队/祭司/村民; 同目标不重发, 仅在 IDLE 且未卡死时补发
+    void orderAction(int sn, int target);  // 已在执行同一目标则不重发; 建筑按 Project 去重
     bool orderStuck(int sn) const;
 
     std::unordered_map<int, Order> orders;  // 单位SN -> 当前命令
@@ -389,7 +390,7 @@ class Mgr : public UsrAI
 
     // 人口分配
     int econPick(const int weight[E_COUNT], const int count[E_COUNT], const int cap[E_COUNT]) const;
-    Stock phaseNeed() const;            // 已排进队列但还没花出去的资源
+    Stock phaseNeed() const;  // 已排进队列但还没花出去的资源
     void econPlan(int phase);
     void runEconomy();  // 对岗位缺口做贪心匹配
 
@@ -462,12 +463,11 @@ class Mgr : public UsrAI
     void vanguardPick();
     bool inVanguard(int sn) const { return vanguard.count(sn) > 0; }
     void runAssault();
-    void runAtkPriest();
     void runTowerBreak();
     void clearRoad();  // 借过一下
 
-    double enemyGap(const FloatPos& at) const;  // 到最近敌军的格距, 没有敌军返回INF
-    FloatPos marchGoal() const;                 // 攻城厂, 没定位就是对角
+    double enemyGap(const FloatPos& at) const;          // 到最近敌军的格距, 没有敌军返回INF
+    FloatPos marchGoal() const;                         // 攻城厂, 没定位就是对角
     Pos retreatCell(const Pos& from, int steps) const;  // 沿 nav 下坡走 steps 格, 中途卡住就停
 
     Pos corner = {-1, -1};  // 与基地对角的地图角
