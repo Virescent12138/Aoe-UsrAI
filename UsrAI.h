@@ -51,7 +51,7 @@ enum
 const int PLACE_ADJACENT = 100;  // 紧贴其它建筑
 const int PLACE_BONUS = -60;     // 落在该建筑理想距离带内
 const int PLACE_FAILED = 400;    // 之前建造失败过的地基, 按次数累加
-const int DEPOT_FAR = 12;        // 工作点离最近存放点超过这么多格产生智能仓储需求
+const int DEPOT_FAR = 8;         // 工作点离最近存放点超过这么多格产生智能仓储需求
 const int CREW_BUILD = 2;        // 一个工地派几个人
 const int CREW_FIX = 1;          // 修箭塔派几个人
 
@@ -61,17 +61,17 @@ const int SCOUT_MIN_GAIN = 8;                              // 至少探明这么
 const int SCOUT_HOME_RADIUS = 45;                          // 只在基地直线距离此范围内探图, 内含区域由防守机制保证无敌人
 const int SCOUT_DONE = 2;                                  // 离路径点这么多格内就算站到了
 const int SCOUT_HOME_DONE = 5;                             // 离集合点这么多格内就算回到了
-const double SCOUT_DETOUR = 1.5;                           // 直线距离折算成实际路程的系数
+const double SCOUT_DETOUR = 1.2;                           // 直线距离折算成实际路程的系数
 const int SCOUT_HOME_STAY = 25 * 90;                       // 回避时间
 const int SCOUT_WAVE[3] = {25 * 240, 25 * 540, 25 * 840};  // 波次
-const int MOVE_RETRY = 25;      // 军队/祭司移动令连续这么多个 IDLE 帧无进展即判卡死
-const double MOVE_GAIN = 0.5;  // 两次 IDLE 之间至少靠近这么多格才算有进展
+const int MOVE_RETRY = 25;                                 // 军队/祭司移动令连续这么多个 IDLE 帧无进展即判卡死
+const double MOVE_GAIN = 0.5;                              // 两次 IDLE 之间至少靠近这么多格才算有进展
 
 // 总攻
-const int ASSAULT_FRAME = 25 * 60 * 15.4;    // 发动进攻
+const int ASSAULT_FRAME = 25 * 60 * 15.3;  // 发动进攻
 const double RETREAT_BOW = 4.0;            // 敌人进到这个格距就后撤
 const double RETREAT_STONE = 6.0;          // 敌人进到这个格距就后撤
-const int RETREAT_STEP = 3;                // 单次后撤沿 nav 走这么多格
+const int RETREAT_STEP = 2;                // 单次后撤沿 nav 走这么多格
 const int RETREAT_GROUP = 2;               // 触发后撤时, 周围这么多格内的己方一起走
 const int HOME_KEEP = 10;                  // 出动前, 基地附近至少留这么多复合弓守家
 const int HOME_RANGE = 40;                 // 算作"基地附近"的格距
@@ -81,8 +81,8 @@ const int TOWER_ALERT = 55;                // 提前点名范围
 const int FIX_TOWER_UNTIL = 25 * 60 * 15;  // 这之后不再修塔
 const int WAIT_BAND_IN = 22;               // 待命部队散开到离基地此距离以外
 const int WAIT_BAND_OUT = 26;              // 待命部队散开到离基地此距离以内
-const int PRIEST_COVER_GAP = 2;            // 祭司站到前排复合弓后方这么多格
-const int PRIEST_STAY_BAND = 2;            // 保守预站位环宽
+const int PRIEST_BACK = 6;                 // 祭司站在复合弓重心沿 nav 往基地方向这么多格
+const int PRIEST_REPATH = 2;               // 新站位离当前移动目标不足这么多格时不改令
 
 // 经济参数
 const int CARRY_LIMIT = 10;           // 村民荷载
@@ -105,7 +105,7 @@ const double WORK_SWITCH_COST = 6.0;  // 抢在岗采集工相当于额外走这
 const double WORK_CARRY_COST = 6.0;   // 身上已有资源时再增加这么多格的打断代价
 
 // 各阶段人员比例, 顺序 木 食 金
-const int ECON_WEIGHT[3][3] = {{4, 6, 0}, {5, 4, 3}, {1, 4, 4}};
+const int ECON_WEIGHT[3][3] = {{4, 6, 0}, {5, 4, 2}, {1, 5, 3}};
 
 const int SURPLUS_WEIGHT = 1;          // 最低标准
 const int SURPLUS_BAND = 100;          // 数量防抖
@@ -329,10 +329,10 @@ class Mgr : public UsrAI
     bool afford(const Stock& c) const { return available().covers(c); }
 
     // 距离场与代价图
-    void fieldBuild(std::vector<int>& out, const Pos& src, int size);                        // 可走格的 bfs
+    void fieldBuild(std::vector<int>& out, const Pos& src, int size);                                // 可走格的 bfs
     void ringAdd(std::vector<int>& g, const Pos& around, int size, int cost, int inner, int outer);  // bfs环带变体
 
-    // 统一命令层: 所有单位的移动/动作都经这里下达, 进展与卡死判定集中在 orderFrame
+    // 统一命令层
     void orderFrame();                                              // 清理失效命令, 更新进展与卡死标记
     void orderMove(int sn, const FloatPos& at, bool back = false);  // 同目标不重发, 仅在 IDLE 且未卡死时补发
     void orderAction(int sn, int target);                           // 已在执行同一目标则不重发; 建筑按 Project 去重
@@ -382,7 +382,6 @@ class Mgr : public UsrAI
     // 打猎
     void huntFrame();                                 // 维护当前猎物与已经稳定下来的尸体批次
     void runHunt();                                   // 两名猎人集火当前猎物
-    int huntFutureFood() const;                       // 未来会变成尸体岗位的数量
     void huntDepotWant(std::vector<Pos>& out) const;  // 整群打完后再把尸体交给仓库规划
 
     std::vector<int> huntTargets;               // 当前羚羊 SN
@@ -390,8 +389,7 @@ class Mgr : public UsrAI
 
     // 人口分配
     int econPick(const int weight[E_COUNT], const int count[E_COUNT], const int cap[E_COUNT]) const;
-    Stock phaseNeed() const;             // 已排进队列但还没花出去的资源
-    std::vector<int> planFood() const;   // 所有食物岗位按产出降序排列后的 ResKind 序列
+    Stock phaseNeed() const;            // 已排进队列但还没花出去的资源
     void econPlan(int phase);
     void runEconomy();  // 对岗位缺口做贪心匹配
 
@@ -405,7 +403,6 @@ class Mgr : public UsrAI
     // 建造
     void buildFrame();                                             // 清空排队, 重算仓库收益图
     void runBuild();                                               // 维护建造
-    void releaseBuilders(const BuildSite& s);                      // 释放工地人员
     void wantBuilding(int buildingType, int total, int priority);  // 该类总数补到 total
     void wantDepot(int depotType, int priority);                   // 有远端需求时补一座(首座谷仓无条件)
 
@@ -471,7 +468,7 @@ class Mgr : public UsrAI
 
     double enemyGap(const FloatPos& at) const;  // 到最近敌军的格距, 没有敌军返回INF
     FloatPos marchGoal() const;                 // 攻城厂, 没定位就是对角
-    Pos retreatCell(const Pos& from) const;     // 沿 nav 下坡走 RETREAT_STEP 格, 中途卡住就停
+    Pos retreatCell(const Pos& from, int steps) const;  // 沿 nav 下坡走 steps 格, 中途卡住就停
 
     Pos corner = {-1, -1};  // 与基地对角的地图角
     int siegeSN = -1;

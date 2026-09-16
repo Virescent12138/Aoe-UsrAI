@@ -18,6 +18,7 @@ Build/
 
 # 日志文件
 *.log
+*.video
 
 # CursorAI相关文件
 .cursor
