@@ -53,7 +53,6 @@ const int PLACE_BONUS = -60;     // 落在该建筑理想距离带内
 const int PLACE_FAILED = 400;    // 之前建造失败过的地基, 按次数累加
 const int DEPOT_FAR = 8;         // 工作点离最近存放点超过这么多格产生智能仓储需求
 const int CREW_BUILD = 2;        // 一个工地派几个人
-const int CREW_FIX = 1;          // 修箭塔派几个人
 
 // 侦察
 const int SCOUT_VIEW = 12;                                 // 侦察视野
@@ -68,21 +67,22 @@ const int MOVE_RETRY = 25;                                 // 军队/祭司移�
 const double MOVE_GAIN = 0.5;                              // 两次 IDLE 之间至少靠近这么多格才算有进展
 
 // 总攻
-const int ASSAULT_FRAME = 25 * 60 * 15.3;                // 发动进攻
-const int FARMER_MARCH_FRAME = ASSAULT_FRAME + 25 * 50;  // 此后停止经济, 村民全体跟进
-const double RETREAT_BOW = 4.0;                          // 敌人进到这个格距就后撤
-const double RETREAT_STONE = 6.0;                        // 敌人进到这个格距就后撤
-const double RETREAT_PRIEST = 9.0;                       // 祭司的后撤格距
-const int RETREAT_STEP = 2;                              // 单次后撤沿 nav 走这么多格
-const int RETREAT_GROUP = 2;                             // 触发后撤时, 周围这么多格内的己方一起走
-const int HOME_KEEP = 10;                                // 出动前, 基地附近至少留这么多复合弓守家
-const int HOME_RANGE = 40;                               // 算作"基地附近"的格距
-const int BELONG_CORNER = 60;                            // 分隔攻守判据
-const int DEF_ALERT = 45;                                // 进到这个距离才算来袭波次
-const int TOWER_ALERT = 55;                              // 提前点名范围
-const int FIX_TOWER_UNTIL = 25 * 60 * 15;                // 这之后不再修塔
-const int WAIT_BAND_IN = 22;                             // 待命部队散开到离基地此距离以外
-const int WAIT_BAND_OUT = 26;                            // 待命部队散开到离基地此距离以内
+const bool STEADY_MODE = false;            // 稳定模式
+const int ASSAULT_FRAME = 25 * 60 * 16;    // 发动进攻
+const int SIEGE_SCAN = 12;                 // 稳定模式: 主力进到攻城厂这么多格内才算敌方基地已探明
+const double RETREAT_BOW = 1.6;            // 敌人进到这个格距就后撤
+const double RETREAT_STONE = 1.6;          // 敌人进到这个格距就后撤
+const double RETREAT_PRIEST = 9.0;         // 祭司的后撤格距
+const int RETREAT_STEP = 2;                // 单次后撤沿 nav 走这么多格
+const int RETREAT_GROUP = 1;               // 触发后撤时, 周围这么多格内的己方一起走
+const int HOME_KEEP = 10;                   // 出动前, 基地附近至少留这么多复合弓守家
+const int HOME_RANGE = 40;                 // 算作"基地附近"的格距
+const int BELONG_CORNER = 60;              // 分隔攻守判据
+const int DEF_ALERT = 45;                  // 进到这个距离才算来袭波次
+const int TOWER_ALERT = 55;                // 提前点名范围
+const int FIX_TOWER_UNTIL = 25 * 60 * 15;  // 这之后不再修塔
+const int WAIT_BAND_IN = 22;               // 待命部队散开到离基地此距离以外
+const int WAIT_BAND_OUT = 26;              // 待命部队散开到离基地此距离以内
 
 // 经济参数
 const int CARRY_LIMIT = 10;           // 村民荷载
@@ -333,10 +333,9 @@ class Mgr : public UsrAI
     void ringAdd(std::vector<int>& g, const Pos& around, int size, int cost, int inner, int outer);  // bfs环带变体
 
     // 统一命令层
-    void orderFrame();  // 清理失效命令, 更新进展与卡死标记
-    void orderMove(int sn, const FloatPos& at,
-                   bool back = false);     // 军队/祭司/村民; 同目标不重发, 仅在 IDLE 且未卡死时补发
-    void orderAction(int sn, int target);  // 已在执行同一目标则不重发; 建筑按 Project 去重
+    void orderFrame();                                              // 清理失效命令, 更新进展与卡死标记
+    void orderMove(int sn, const FloatPos& at, bool back = false);  // 同目标不重发, 仅在 IDLE 且未卡死时补发
+    void orderAction(int sn, int target);                           // 已在执行同一目标则不重发; 建筑按 Project 去重
     bool orderStuck(int sn) const;
 
     std::unordered_map<int, Order> orders;  // 单位SN -> 当前命令
@@ -453,6 +452,7 @@ class Mgr : public UsrAI
 
     bool combat = false;        // 本帧祭司不探图
     std::vector<int> hostiles;  // 本帧要处理的敌人SN
+    int fixer = -1;             // 修塔村民SN, 固定一人
 
     // 进攻
     void offense();                    // 进攻总调度: 定位对角与攻城厂, 派兵
@@ -464,7 +464,9 @@ class Mgr : public UsrAI
     bool inVanguard(int sn) const { return vanguard.count(sn) > 0; }
     void runAssault();
     void runTowerBreak();
-    void clearRoad();  // 借过一下
+    void priestHold();         // 稳定模式: 总攻期间祭司留在家里
+    bool baseCleared() const;  // 稳定模式: 主力已到场且目标象限的敌军与箭塔清空
+    void clearRoad();          // 借过一下
 
     double enemyGap(const FloatPos& at) const;          // 到最近敌军的格距, 没有敌军返回INF
     FloatPos marchGoal() const;                         // 攻城厂, 没定位就是对角
@@ -480,7 +482,8 @@ class Mgr : public UsrAI
     std::unordered_map<int, int> towerShield;  // 复合弓/投石车SN -> 箭塔SN
     std::unordered_set<int> vanguard;          // 提前出动的复合弓; assaultOn 之后清空并入大部队
 
-    std::vector<int> tars;  // offense 只登记目标象限的敌军
+    std::vector<int> tars;       // offense 只登记目标象限的敌军
+    std::vector<int> tarTowers;  // 稳定模式的低优先级目标: 目标象限的敌方箭塔
 
     // 探图
     // 每轴 MAP_L / SCOUT_VIEW + 1 个点, 下标 idx = i * 每轴点数 + j 对应 Pos(i, j) * SCOUT_VIEW

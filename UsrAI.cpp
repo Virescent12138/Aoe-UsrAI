@@ -70,8 +70,7 @@ static ActionInfo actionRow(int key, bool byUnit)
         {BUILDING_MARKET_WOOD_UPGRADE,
          BUILDING_MARKET,
          AT_NONE,
-         {(int)BUILDING_MARKET_WOOD_UPGRADE_WOOD, (int)BUILDING_MARKET_WOOD_UPGRADE_FOOD, 0, 0}}
-    };
+         {(int)BUILDING_MARKET_WOOD_UPGRADE_WOOD, (int)BUILDING_MARKET_WOOD_UPGRADE_FOOD, 0, 0}}};
     for (const ActionInfo& a : table)
         if ((byUnit ? a.unit : a.action) == key) return a;
     return {-1, -1, AT_NONE, Stock()};
@@ -318,7 +317,7 @@ void Mgr::orderFrame()
         const FloatPos here = f ? FloatPos(f->DR, f->UR) : FloatPos(a->DR, a->UR);
         const double d = dis(here, o.at) / cellLen;
 
-        if (f && o.target >= 0)  // 村民动作令: 带着资源、在干别的活或位置有变化都算有进展
+        if (f)  // 村民: 带着资源、在干别的活或位置有变化都算有进展
         {
             const int obj = f->WorkObjectSN;
             if (f->Resource > 0 || (obj != o.target && locate(obj)) || fabs(d - o.best) >= GATHER_MOVE)
@@ -328,14 +327,14 @@ void Mgr::orderFrame()
             }
             else if (++o.idle >= GATHER_STUCK) o.stuck = true;
         }
-        else if ((f ? f->NowState : a->NowState) == HUMAN_STATE_IDLE)
+        else if (a->NowState == HUMAN_STATE_IDLE)
         {
             if (o.back)  // 后撤走完
             {
                 it = orders.erase(it);
                 continue;
             }
-            if (o.target < 0)  // 移动令: IDLE 帧里靠近不足 MOVE_GAIN 计一次
+            if (o.target < 0)  // 军队/祭司移动令: IDLE 帧里靠近不足 MOVE_GAIN 计一次
             {
                 if (d < o.best - MOVE_GAIN)
                 {
@@ -351,24 +350,21 @@ void Mgr::orderFrame()
 
 void Mgr::orderMove(int sn, const FloatPos& at, bool back)
 {
-    FloatPos here;
-    int state;
-    if (const tagArmy* a = army(sn)) here = FloatPos(a->DR, a->UR), state = a->NowState;
-    else if (const tagFarmer* f = farmer(sn)) here = FloatPos(f->DR, f->UR), state = f->NowState;
-    else return;
+    const tagArmy* a = army(sn);  // 移动令只下给军队和祭司
+    if (!a) return;
 
     auto it = orders.find(sn);
     if (it != orders.end() && it->second.target < 0 && it->second.back == back &&
         dis(it->second.at, at) < (double)BLOCKSIDELENGTH * 0.5)
     {
-        if (!it->second.stuck && state == HUMAN_STATE_IDLE) HumanMove(sn, at.dr, at.ur);
+        if (!it->second.stuck && a->NowState == HUMAN_STATE_IDLE) HumanMove(sn, at.dr, at.ur);
         return;
     }
 
     Order o;
     o.at = at;
     o.back = back;
-    o.best = dis(here, at) / (double)BLOCKSIDELENGTH;
+    o.best = dis(FloatPos(a->DR, a->UR), at) / (double)BLOCKSIDELENGTH;
     orders[sn] = o;
     HumanMove(sn, at.dr, at.ur);
 }
@@ -586,7 +582,7 @@ void Mgr::huntFrame()
     {
         vector<int>& batch = *bit;
         batch.erase(remove_if(batch.begin(), batch.end(),
-                                   [&](int sn)
+                              [&](int sn)
         {
             const tagResource* r = resource(sn);
             return !r || r->Type != RESOURCE_GAZELLE || r->Blood > 0;
@@ -794,8 +790,8 @@ void Mgr::gatherFrame()
 
     // 同类资源下即产出降序
     for (int k = 0; k < RK_COUNT; k++)
-        sort(pools[k].spots.begin(), pools[k].spots.end(), [](const GatherSpot& a, const GatherSpot& b)
-        { return a.cost != b.cost ? a.cost < b.cost : a.sn < b.sn; });
+        sort(pools[k].spots.begin(), pools[k].spots.end(),
+             [](const GatherSpot& a, const GatherSpot& b) { return a.cost != b.cost ? a.cost < b.cost : a.sn < b.sn; });
 
     vector<int> stale;
     for (const auto& it : holder)
@@ -1601,6 +1597,16 @@ void Mgr::defence()
         if (dis(FloatPos(it.second->DR, it.second->UR), baseF) < DEF_ALERT * (double)BLOCKSIDELENGTH)
             hostiles.push_back(it.first);
 
+    int cnt = 0;
+    for (const auto& it : armyMap)
+        if (it.second->Sort == AT_STONE_THROWER) cnt++;
+
+    if (cnt == 2 && hostiles.empty())
+    {
+        assaultOn = true;
+        return;
+    }
+
     fixTower();
 
     combat = !hostiles.empty();
@@ -1624,22 +1630,24 @@ void Mgr::fixTower()
             if (!tar || t->SN < tar->SN) tar = t;
         }
 
-    vector<int> crew = crewOf(D_FIX, -1);
+    if (fixer >= 0 && (!farmer(fixer) || !duty.count(fixer))) fixer = -1;  // 阵亡或岗位已被解除
+
     if (!tar)
     {
-        for (int sn : crew) dropDuty(sn, true);
+        if (fixer >= 0) dropDuty(fixer, true);
+        fixer = -1;
         return;
     }
 
-    while ((int)crew.size() < CREW_FIX)
+    if (fixer < 0)
     {
         const int sn = pickWorker(centerOf({tar->BlockDR, tar->BlockUR}, BUILDING_ARROWTOWER), true);
-        if (sn < 0) break;
+        if (sn < 0) return;
         setDuty(sn, D_FIX, -1);
-        crew.push_back(sn);
+        fixer = sn;
     }
 
-    for (int sn : crew) orderAction(sn, tar->SN);
+    orderAction(fixer, tar->SN);
 }
 
 void Mgr::runTower()
@@ -1744,38 +1752,80 @@ int Mgr::siegeDis(const Pos& p) const { return siegePos.dr < 0 ? dis(corner, p) 
 void Mgr::offenseUpdate()
 {
     tars.clear();
+    tarTowers.clear();
 
-    // 进攻目标只登记敌军
+    // 一般进攻目标只登记敌军
     for (const auto& it : eArmyMap)
     {
         const tagArmy& e = *it.second;
         if (corner.dr >= 0 && dis(corner, Pos(e.BlockDR, e.BlockUR)) > BELONG_CORNER) continue;
         tars.push_back(e.SN);
     }
+
+    if (!STEADY_MODE) return;
+
+    for (const auto& it : eBuildingMap)  // 稳定模式: 箭塔是低优先级目标
+    {
+        const tagBuilding& b = *it.second;
+        if (b.Type != BUILDING_ARROWTOWER) continue;
+        if (corner.dr >= 0 && dis(corner, Pos(b.BlockDR, b.BlockUR)) > BELONG_CORNER) continue;
+        tarTowers.push_back(b.SN);
+    }
+    sort(tarTowers.begin(), tarTowers.end());
 }
 
 int Mgr::attackSelector(const tagArmy& u) const
 {
-    int pick = -1;
-    double best = 0.0;
     const Pos here = {u.BlockDR, u.BlockUR};
+
+    auto nearest = [&](bool onlyPriestHunter)
+    {
+        int pick = -1;
+        double best = 0.0;
+        for (int sn : tars)
+        {
+            const tagArmy* e = enemyArmy(sn);
+            if (!e) continue;
+            if (onlyPriestHunter && (priest < 0 || e->WorkObjectSN != priest)) continue;
+
+            const double d = dis(here, Pos(e->BlockDR, e->BlockUR));
+            if (pick < 0 || d < best || (d == best && sn < pick))
+            {
+                pick = sn;
+                best = d;
+            }
+        }
+        return pick;
+    };
+
+    const int hunter = nearest(true);  // 最高优先级: 已索敌祭司的敌人, 可打断当前目标
+    if (hunter >= 0) return hunter;
 
     if (enemyArmy(u.WorkObjectSN) && find(tars.begin(), tars.end(), u.WorkObjectSN) != tars.end())
         return u.WorkObjectSN;
 
-    for (int sn : tars)
-    {
-        const tagArmy* e = enemyArmy(sn);
-        if (!e) continue;
+    const int pick = nearest(false);
+    if (pick >= 0) return pick;
 
-        const double d = dis(here, Pos(e->BlockDR, e->BlockUR));
-        if (pick < 0 || d < best || (d == best && sn < pick))
+    // 最低优先级: 箭塔, 任何敌军出现都会把它顶掉
+    if (tarTowers.empty()) return -1;
+    if (find(tarTowers.begin(), tarTowers.end(), u.WorkObjectSN) != tarTowers.end()) return u.WorkObjectSN;
+
+    int tower = -1;
+    double best = 0.0;
+    for (int sn : tarTowers)
+    {
+        const tagBuilding* b = enemyBuilding(sn);
+        if (!b) continue;
+
+        const double d = dis(here, Pos(b->BlockDR, b->BlockUR));
+        if (tower < 0 || d < best || (d == best && sn < tower))
         {
-            pick = sn;
+            tower = sn;
             best = d;
         }
     }
-    return pick;
+    return tower;
 }
 
 double Mgr::enemyGap(const FloatPos& at) const
@@ -1858,7 +1908,7 @@ void Mgr::runAssault()
     {
         const tagArmy* u = it.second;
         if (u->Sort != AT_COMPOSITE_BOWMAN && u->Sort != AT_STONE_THROWER && u->Sort != AT_PRIEST) continue;
-        if (u->Sort == AT_PRIEST && priestRushOn) continue;  // 冲锋中的祭司只管武器厂
+        if (u->Sort == AT_PRIEST && (STEADY_MODE || priestRushOn)) continue;  // 稳定模式留守, 冲锋中只管武器厂
         if (!inMap(u->BlockDR, u->BlockUR)) continue;
         if (!assaultOn && !inVanguard(u->SN)) continue;
         units.push_back(u);
@@ -1886,14 +1936,14 @@ void Mgr::runAssault()
         vector<const tagArmy*> triggers;
         triggers.reserve(retreat.size());
         for (const tagArmy* u : units)
-            if (retreat.count(u->SN) && u->Sort != AT_PRIEST) triggers.push_back(u);  // 祭司的远距离后撤不带动弓兵
+            if (retreat.count(u->SN)) triggers.push_back(u);
 
         for (const tagArmy* u : units)
         {
             if (retreat.count(u->SN)) continue;
             for (const tagArmy* t : triggers)
             {
-                if (max(abs(u->BlockDR - t->BlockDR), abs(u->BlockUR - t->BlockUR)) <= RETREAT_GROUP)
+                if (dis(FloatPos(u->DR, u->UR), FloatPos(t->DR, t->UR)) <= RETREAT_GROUP * (double)BLOCKSIDELENGTH)
                 {
                     retreat.insert(u->SN);
                     break;
@@ -1923,6 +1973,33 @@ void Mgr::runAssault()
         if (tar >= 0) orderAction(u.SN, tar);  // 有目标就打断行军
         else orderMove(u.SN, march);
     }
+}
+
+void Mgr::priestHold()  // 稳定模式: 总攻期间祭司待在集合点
+{
+    const tagArmy* p = army(priest);
+    if (!p || base.dr < 0) return;
+
+    homeETA({p->BlockDR, p->BlockUR});  // 顺带更新 home
+    if (home.dr < 0) return;
+
+    // 到家停手; 卡住则撤令, 下帧重新下达
+    if (dis(FloatPos(p->DR, p->UR), FloatPos(home)) < SCOUT_HOME_DONE * (double)BLOCKSIDELENGTH || orderStuck(priest))
+        orders.erase(priest);
+    else orderMove(priest, FloatPos(home));
+}
+
+bool Mgr::baseCleared() const
+{
+    if (siegeSN < 0 || !tars.empty() || !tarTowers.empty()) return false;
+
+    for (const auto& it : armyMap)  // 主力已抵达攻城厂附近, 该区域视野已经打开
+    {
+        const tagArmy* u = it.second;
+        if (u->Sort == AT_PRIEST || !inMap(u->BlockDR, u->BlockUR)) continue;
+        if (dis(Pos(u->BlockDR, u->BlockUR), siegePos) <= SIEGE_SCAN) return true;
+    }
+    return false;
 }
 
 void Mgr::runTowerBreak()
@@ -2020,6 +2097,20 @@ void Mgr::offense()
     if (!assaultOn && gameFrame >= ASSAULT_FRAME) assaultOn = true;
     vanguardPick();
     if (!assaultOn && vanguard.empty()) return;
+
+    if (STEADY_MODE)
+    {
+        if (!priestRushOn && baseCleared())
+        {
+            priestRushOn = true;  // 清场之后祭司才出发
+            orders.erase(priest);
+        }
+
+        runAssault();  // 祭司不在里面
+        if (priestRushOn) orderAction(priest, siegeSN);
+        else if (assaultOn) priestHold();
+        return;
+    }
 
     const bool breakNow = tars.empty() && siegeSN >= 0;
     if (breakNow != towerBreakOn)
@@ -2126,35 +2217,22 @@ void Mgr::update(const tagInfo& info)
     laborFrame();
 
     defence();
-    const bool farmerMarch = gameFrame >= FARMER_MARCH_FRAME;
-    if (!farmerMarch) runHunt();  // strategy/econPlan 再规划剩余经济人口
+    runHunt();  // strategy/econPlan 再规划剩余经济人口
     if (!combat && !assaultOn) runScout();
     if (!combat && !assaultOn) clearRoad();
     offense();
 
-    if (farmerMarch)  // 停止经济, 村民全体跟进, 不再恢复
-    {
-        const FloatPos goal = marchGoal();
-        for (const auto& it : farmerMap)
-        {
-            dropDuty(it.first, false);
-            orderMove(it.first, goal);
-        }
-    }
-    else
-    {
-        strategy();  // econPlan 在这里定下各岗位人数
+    strategy();  // econPlan 在这里定下各岗位人数
 
-        laborRelease();
-        laborFrame();
+    laborRelease();
+    laborFrame();
 
-        runProd();
-        runBuild();
-        laborFrame();
-        runEconomy();
+    runProd();
+    runBuild();
+    laborFrame();
+    runEconomy();
 
-        runDestroy();
-    }
+    runDestroy();
 
     CommitInstruction();
 }
