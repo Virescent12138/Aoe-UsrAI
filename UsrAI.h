@@ -67,11 +67,9 @@ const int MOVE_RETRY = 25;                                 // 军队/祭司移�
 const double MOVE_GAIN = 0.5;                              // 两次 IDLE 之间至少靠近这么多格才算有进展
 
 // 总攻
-const bool STEADY_MODE = false;            // 稳定模式
 const int ASSAULT_FRAME = 25 * 60 * 16;    // 发动进攻
-const int SIEGE_SCAN = 12;                 // 稳定模式: 主力进到攻城厂这么多格内才算敌方基地已探明
-const double RETREAT_BOW = 1.6;            // 敌人进到这个格距就后撤
-const double RETREAT_STONE = 1.6;          // 敌人进到这个格距就后撤
+const double RETREAT_BOW = 2.0;            // 敌人进到这个格距就后撤
+const double RETREAT_STONE = 2.0;          // 敌人进到这个格距就后撤
 const double RETREAT_PRIEST = 9.0;         // 祭司的后撤格距
 const int RETREAT_STEP = 2;                // 单次后撤沿 nav 走这么多格
 const int RETREAT_GROUP = 1;               // 触发后撤时, 周围这么多格内的己方一起走
@@ -99,6 +97,7 @@ const int RES_RANGE = 40;             // 有效资源的范围
 const int HUNT_CLUSTER = 10;          // 打猎聚类限制
 const int CREW_HUNT = 2;              // 打猎人数
 const int RES_BLACK = 25 * 40;        // 无效资源点,拉黑这么久
+const int GATHER_PERIOD = 5;          // 采集池最多这么多帧重建一次, 输入状态一变立刻重建
 const int GATHER_STUCK = 25 * 12;     // 村民命令连续这么多帧既没动也没产出就判定卡死
 const double GATHER_MOVE = 0.3;       // 到资源的格距变化小于这个值视为没动
 const double WORK_SWITCH_COST = 6.0;  // 抢在岗采集工相当于额外走这么多格
@@ -228,6 +227,13 @@ struct Duty
     int target;  // 采集/农田为目标SN, 工地为 siteKey, 修塔/打猎为 -1
 };
 
+struct WorkerCand  // 选址时反复取用的村民快照, 免去每次哈希查表
+{
+    int sn;
+    FloatPos at;
+    double extra;  // 打断代价
+};
+
 inline bool inMap(int dr, int ur) { return dr >= 0 && ur >= 0 && dr < MAP_L && ur < MAP_U; }
 inline int cellIdx(int dr, int ur) { return dr * MAP_U + ur; }
 inline Pos cellPos(int idx) { return Pos(idx / MAP_U, idx % MAP_U); }
@@ -286,6 +292,7 @@ class Mgr : public UsrAI
     // 每帧信息
     void makeFrame(const tagInfo& info);
     void mark(const tagBuilding& b);  // 构建建筑的 blockcell
+    void terrainFrame();              // 重建地形派生表: 可走 / 可建 / 高度
 
     std::unordered_map<int, const tagFarmer*> farmerMap;
     std::unordered_map<int, const tagArmy*> armyMap;
@@ -319,8 +326,8 @@ class Mgr : public UsrAI
     // 地形与位置判定
     const tagTerrain& cell(int dr, int ur) const { return (*theMap)[dr][ur]; }
     bool blocked(int dr, int ur) const { return blockCell[cellIdx(dr, ur)] != 0; }
-    bool valid(int dr, int ur) const;               // 地形是否允许建造
-    bool walkable(int dr, int ur) const;            // 是否可以行走
+    bool valid(int dr, int ur) const;  // 地形是否允许建造
+    bool walkable(int dr, int ur) const { return inMap(dr, ur) && walkCell[cellIdx(dr, ur)] != 0; }
     bool canPlace(int dr, int ur, int size) const;  // size*size 的地基是否放得下
     int lockOf(int enemySN) const;                  // 该敌人锁着的我方SN, 没锁到我方返回 -1, 锁到祭司返回 -1
 
@@ -331,6 +338,10 @@ class Mgr : public UsrAI
     // 距离场与代价图
     void fieldBuild(std::vector<int>& out, const Pos& src, int size);                                // 可走格的 bfs
     void ringAdd(std::vector<int>& g, const Pos& around, int size, int cost, int inner, int outer);  // bfs环带变体
+
+    std::vector<Pos> bfsQueue;   // 两个 bfs 共用的队列缓冲, 免去每次分配
+    std::vector<int> ringStamp;  // ringAdd 的访问标记, 用版本号代替整图清零
+    int ringTick = 0;
 
     // 统一命令层
     void orderFrame();                                              // 清理失效命令, 更新进展与卡死标记
@@ -346,6 +357,8 @@ class Mgr : public UsrAI
     void laborRelease();
     double workerCost(int sn, const FloatPos& at, bool steal) const;  // 距离 + 打断代价, 单位为格
     int pickWorker(const FloatPos& at, bool steal, double* cost = nullptr) const;
+    void workerCands(std::vector<WorkerCand>& out) const;  // 可抢的村民快照, 与 pickWorker(steal) 同序
+    int pickCand(const std::vector<WorkerCand>& cand, const FloatPos& at, double* cost) const;
     void claimWorker(int sn);                             // 解绑并移出空闲池
     void setDuty(int sn, int kind, int target);           // 取走该村民并登记岗位
     void dropDuty(int sn, bool toFree);                   // 解绑并撤销命令, toFree 时交还空闲池
@@ -358,6 +371,13 @@ class Mgr : public UsrAI
 
     // 全局帧状态
     std::vector<unsigned char> blockCell;  // 被资源或建筑占住的格子, cellIdx 索引
+    std::vector<unsigned char> walkCell;   // 本帧可走格
+    std::vector<unsigned char> buildCell;  // 本帧可建格: 地形合法且没被占
+    std::vector<int> heightCell;           // 高度, 免去每次二维查表
+    std::vector<unsigned char> walkPrev;   // 上次重算距离场时的可走格
+    Pos navBase = {-1, -1};                // 当前距离场对应的基地
+    int navVer = 0;                        // 距离场版本, 供派生缓存失效
+    int frameTick = 0;                     // 内部帧号, 给各类每帧缓存打戳
     const std::vector<std::vector<tagTerrain>>* theMap = nullptr;
 
     int gameFrame = 0;
@@ -374,10 +394,17 @@ class Mgr : public UsrAI
     std::vector<int> laborPool;  // 空闲人口
 
     // 采集
-    void gatherFrame();                          // 重建全部采集池(含农田), 清理失效绑定
+    void gatherFrame();                          // 按需重建采集池, 每帧保证绑定有效
+    void gatherRebuild();                        // 真正重建全部采集池(含农田)
     void gatherWatch();                          // 解除过期拉黑, 把卡死的采集点拉黑
     bool reachable(const tagResource* r) const;  // 周围一圈有没有 nav 可达的落脚格
     double depotCost(const FloatPos& at, int depotType) const;
+
+    std::vector<FloatPos> depotDone[2];  // [0]谷仓系 [1]仓库系: 已完工的中心与存放点中心
+    std::vector<FloatPos> depotAll[2];   // 同上但含未完工, 供覆盖判定
+    std::unordered_set<int> gatherSel;   // 当前池里登记的采集点SN
+    long long gatherSig = -1;            // 采集池输入状态的签名
+    int gatherAt = -1000;                // 上次重建的帧号
 
     // 打猎
     void huntFrame();                                 // 维护当前猎物与已经稳定下来的尸体批次
@@ -413,6 +440,18 @@ class Mgr : public UsrAI
     int queuedBuild(int type) const;
     bool buildAvailable(int type) const;
     Pos findSpot(int type, int& firstWorker);  // 选址与首个施工者联合决策
+
+    static int costVariant(int type);                       // 建筑类型 -> 附加代价层的编号
+    void costPrepare(int variant);                          // 代价图与其二维前缀和, 每帧每变体只算一次
+    const std::vector<unsigned char>& placeMask(int size);  // 可落地掩码, 每帧每尺寸只算一次
+
+    std::vector<int> costBaseMap;          // 与建筑类型无关的代价层
+    std::vector<int> costVarMap[3];        // 叠加附加层之后的代价图
+    std::vector<long long> costVarSat[3];  // 上面各自的二维前缀和
+    int costBaseAt = -1;
+    int costVarAt[3] = {-1, -1, -1};
+    std::vector<unsigned char> maskMap[8];  // 下标为地基边长, buildingSize 最大为 3
+    int maskAt[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
 
     // 生产
     void prodFrame();                                  // 清空本帧队列
@@ -464,13 +503,14 @@ class Mgr : public UsrAI
     bool inVanguard(int sn) const { return vanguard.count(sn) > 0; }
     void runAssault();
     void runTowerBreak();
-    void priestHold();         // 稳定模式: 总攻期间祭司留在家里
-    bool baseCleared() const;  // 稳定模式: 主力已到场且目标象限的敌军与箭塔清空
-    void clearRoad();          // 借过一下
+    void clearRoad();  // 借过一下
 
     double enemyGap(const FloatPos& at) const;          // 到最近敌军的格距, 没有敌军返回INF
     FloatPos marchGoal() const;                         // 攻城厂, 没定位就是对角
     Pos retreatCell(const Pos& from, int steps) const;  // 沿 nav 下坡走 steps 格, 中途卡住就停
+
+    std::vector<Pos> bandPoints;  // 待命散开点, 只随距离场重算
+    int bandVer = -1;
 
     Pos corner = {-1, -1};  // 与基地对角的地图角
     int siegeSN = -1;
@@ -482,8 +522,7 @@ class Mgr : public UsrAI
     std::unordered_map<int, int> towerShield;  // 复合弓/投石车SN -> 箭塔SN
     std::unordered_set<int> vanguard;          // 提前出动的复合弓; assaultOn 之后清空并入大部队
 
-    std::vector<int> tars;       // offense 只登记目标象限的敌军
-    std::vector<int> tarTowers;  // 稳定模式的低优先级目标: 目标象限的敌方箭塔
+    std::vector<int> tars;  // offense 只登记目标象限的敌军
 
     // 探图
     // 每轴 MAP_L / SCOUT_VIEW + 1 个点, 下标 idx = i * 每轴点数 + j 对应 Pos(i, j) * SCOUT_VIEW
