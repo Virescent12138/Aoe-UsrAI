@@ -103,7 +103,6 @@ void LineArea::onRightMouseDown()
     }
 }
 
-
 string LineArea::Name()
 {
     return "Line";
