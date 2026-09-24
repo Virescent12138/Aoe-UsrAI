@@ -8,12 +8,29 @@ ins UsrIns;
 static const int dx[8] = {0, 1, 0, -1, 1, 1, -1, -1};
 static const int dy[8] = {1, 0, -1, 0, 1, -1, -1, 1};
 
-Mgr mgr;
-
 static long long hashKey(int type, int dr, int ur)  // 哈希
 { return ((long long)(type + 1) << 32) | (unsigned int)cellIdx(dr, ur); }
 
-void UsrAI::processData() { mgr.update(getInfo()); }
+void UsrAI::processData()
+{
+    const tagInfo info = getInfo();  // 本帧快照, 各反查表指向其内部, 须在整帧处理期间存活
+    makeFrame(info);
+
+    defence();
+    runHunt();
+    if (!combat && !assaultOn) runScout();
+    if (!combat && !assaultOn) clearRoad();
+    offense();
+
+    strategy();  // econPlan 在这里定下各类目标人数
+
+    runProd();
+    runBuild();
+    runEconomy();
+    runDestroy();
+
+    CommitInstruction();
+}
 
 int buildingSize(int type)
 {
@@ -79,67 +96,57 @@ static ActionInfo actionRow(int key, bool byUnit)
 ActionInfo actionInfo(int action) { return actionRow(action, false); }
 ActionInfo unitAction(int unitType) { return actionRow(unitType, true); }
 
+static int buildCrew(int type)  // 仓库/谷仓最多 4 人, 其余功能性建筑 1 人
+{ return type == BUILDING_GRANARY || type == BUILDING_STOCK ? CREW_DEPOT : CREW_BUILD; }
+
 static int siteKey(const BuildSite& s) { return (s.type + 1) * MAP_L * MAP_U + cellIdx(s.site.dr, s.site.ur); }
+
+static bool anyEnemy(const tagArmy&) { return true; }
+
+static int costVariant(int type)  // 建筑类型 -> 附加代价层
+{
+    if (type == BUILDING_FARM) return 1;
+    if (type == BUILDING_ARMYCAMP || type == BUILDING_RANGE || type == BUILDING_HOME || type == BUILDING_MARKET) return 2;
+    return 0;
+}
 
 static bool wantFirst(const Want& a, const Want& b)
 { return a.priority != b.priority ? a.priority > b.priority : a.id > b.id; }
 
-const vector<int>& Mgr::buildingsOf(int type) const
+const vector<int>& UsrAI::buildingsOf(int type) const
 {
     static const vector<int> kEmpty;
     auto it = byType.find(type);
     return it == byType.end() ? kEmpty : it->second;
 }
 
-bool Mgr::valid(int dr, int ur) const
+bool UsrAI::valid(int dr, int ur) const
 {
     if (!inMap(dr, ur)) return false;
     const tagTerrain& t = cell(dr, ur);
     return t.height != -1 && (t.type == MAPPATTERN_DESERT || t.type == MAPPATTERN_GRASS);
 }
 
-bool Mgr::canPlace(int dr, int ur, int size) const
+bool UsrAI::walkable(int dr, int ur) const
+{
+    if (!inMap(dr, ur)) return false;
+    const int t = cell(dr, ur).type;
+    if (t != MAPPATTERN_GRASS && t != MAPPATTERN_DESERT) return false;
+    return !blockCell[cellIdx(dr, ur)];
+}
+
+bool UsrAI::canPlace(int dr, int ur, int size) const
 {
     if (dr < 0 || ur < 0 || dr + size - 1 >= MAP_L || ur + size - 1 >= MAP_U) return false;
 
-    const int h = heightCell[cellIdx(dr, ur)];  // buildCell == valid && !blocked
+    const int h = cell(dr, ur).height;
     for (int i = dr; i < dr + size; i++)
-    {
-        const int row = cellIdx(i, ur);
-        for (int k = 0; k < size; k++)
-            if (!buildCell[row + k] || heightCell[row + k] != h) return false;
-    }
+        for (int j = ur; j < ur + size; j++)
+            if (!valid(i, j) || cell(i, j).height != h || blockCell[cellIdx(i, j)]) return false;
     return true;
 }
 
-void Mgr::terrainFrame()  // 地形每帧只遍历一次, 之后所有判定都查表
-{
-    const size_t cells = (size_t)MAP_L * MAP_U;
-    walkCell.assign(cells, 0);
-    buildCell.assign(cells, 0);
-    heightCell.assign(cells, 0);
-    if (!theMap) return;
-
-    for (int i = 0; i < MAP_L; i++)
-    {
-        const vector<tagTerrain>& row = (*theMap)[i];
-        const int head = cellIdx(i, 0);
-        for (int j = 0; j < MAP_U; j++)
-        {
-            const tagTerrain& t = row[j];
-            const int idx = head + j;
-            heightCell[idx] = t.height;
-
-            if (t.type != MAPPATTERN_GRASS && t.type != MAPPATTERN_DESERT) continue;
-            if (blockCell[idx]) continue;
-
-            walkCell[idx] = 1;
-            if (t.height != -1) buildCell[idx] = 1;
-        }
-    }
-}
-
-int Mgr::lockOf(int enemySN) const
+int UsrAI::lockOf(int enemySN) const
 {
     const tagArmy* e = enemyArmy(enemySN);
     if (!e || e->WorkObjectSN == priest) return -1;
@@ -148,7 +155,7 @@ int Mgr::lockOf(int enemySN) const
     return farmer(sn) || army(sn) || building(sn) ? sn : -1;
 }
 
-void Mgr::mark(const tagBuilding& b)
+void UsrAI::mark(const tagBuilding& b)
 {
     const int s = buildingSize(b.Type);
     for (int i = b.BlockDR; i < b.BlockDR + s; i++)
@@ -156,7 +163,7 @@ void Mgr::mark(const tagBuilding& b)
             if (inMap(i, j)) blockCell[cellIdx(i, j)] = 1;
 }
 
-void Mgr::makeFrame(const tagInfo& info)
+void UsrAI::makeFrame(const tagInfo& info)
 {
     farmerMap.clear();
     armyMap.clear();
@@ -188,7 +195,12 @@ void Mgr::makeFrame(const tagInfo& info)
         if (priest == -1 && a.Sort == AT_PRIEST) priest = a.SN;
     }
 
-    for (const auto& a : info.enemy_armies) eArmyMap[a.SN] = &a;
+    enemies.clear();
+    for (const auto& a : info.enemy_armies)
+    {
+        eArmyMap[a.SN] = &a;
+        enemies.push_back(a.SN);
+    }
 
     // 更新信息
     res.wood = info.Wood;
@@ -211,12 +223,6 @@ void Mgr::makeFrame(const tagInfo& info)
                 if (inMap(a, b)) blockCell[cellIdx(a, b)] = 1;
     }
 
-    for (int k = 0; k < 2; k++)
-    {
-        depotAll[k].clear();
-        depotDone[k].clear();
-    }
-
     for (const auto& b : info.buildings)
     {
         buildingMap[b.SN] = &b;
@@ -224,18 +230,6 @@ void Mgr::makeFrame(const tagInfo& info)
         if (b.Percent >= 100) bldDoneCnt[b.Type]++;
         byType[b.Type].push_back(b.SN);
         mark(b);
-
-        if (b.Type == BUILDING_CENTER || b.Type == BUILDING_GRANARY || b.Type == BUILDING_STOCK)
-        {
-            const FloatPos c = centerOf({b.BlockDR, b.BlockUR}, b.Type);
-            const int only = b.Type == BUILDING_STOCK ? 1 : 0;  // 中心两边都算
-            for (int k = 0; k < 2; k++)
-            {
-                if (b.Type != BUILDING_CENTER && k != only) continue;
-                depotAll[k].push_back(c);
-                if (b.Percent >= 100) depotDone[k].push_back(c);
-            }
-        }
 
         if (base.dr == -1 && b.Type == BUILDING_CENTER)
         {
@@ -250,18 +244,7 @@ void Mgr::makeFrame(const tagInfo& info)
         mark(b);
     }
 
-    frameTick++;
-    terrainFrame();
-
-    // 可走格和基地都没变时, 距离场必然和上一帧相同, 不必再跑一次 bfs
-    if (nav.size() != walkCell.size() || !(navBase == base) || walkCell != walkPrev)
-    {
-        fieldBuild(nav, base, buildingSize(BUILDING_CENTER));
-        walkPrev = walkCell;
-        navBase = base;
-        navVer++;
-    }
-
+    fieldBuild(nav, base, buildingSize(BUILDING_CENTER));  // 子系统构建
     dutyFrame();
     orderFrame();
     huntFrame();
@@ -270,84 +253,51 @@ void Mgr::makeFrame(const tagInfo& info)
     prodFrame();
 }
 
-void Mgr::fieldBuild(vector<int>& out, const Pos& src, int size)
+void UsrAI::fieldBuild(vector<int>& out, const Pos& src, int size)
 {
     out.assign((size_t)MAP_L * MAP_U, -1);
     if (!inMap(src.dr, src.ur)) return;
 
-    vector<Pos>& q = bfsQueue;  // 复用缓冲, 不再每帧构造 deque
-    q.clear();
+    queue<Pos> q;
     for (int i = src.dr; i < src.dr + size; i++)
         for (int j = src.ur; j < src.ur + size; j++)
             if (inMap(i, j))
             {
                 out[cellIdx(i, j)] = 0;
-                q.push_back({i, j});
+                q.push({i, j});
             }
 
-    for (size_t head = 0; head < q.size(); head++)
+    while (!q.empty())
     {
-        const Pos c = q[head];
+        const Pos c = q.front();
+        q.pop();
         const int nd = out[cellIdx(c.dr, c.ur)] + 1;
 
         for (int k = 0; k < 8; k++)
         {
-            const int ndr = c.dr + dx[k], nur = c.ur + dy[k];
-            if (!inMap(ndr, nur)) continue;
-
-            const int nidx = cellIdx(ndr, nur);
-            if (!walkCell[nidx] || out[nidx] >= 0) continue;
+            const Pos n = {c.dr + dx[k], c.ur + dy[k]};
+            if (!walkable(n.dr, n.ur) || out[cellIdx(n.dr, n.ur)] >= 0) continue;
             if (dx[k] && dy[k] && (!walkable(c.dr + dx[k], c.ur) || !walkable(c.dr, c.ur + dy[k]))) continue;
 
-            out[nidx] = nd;
-            q.push_back({ndr, nur});
+            out[cellIdx(n.dr, n.ur)] = nd;
+            q.push(n);
         }
     }
 }
 
-void Mgr::ringAdd(vector<int>& g, const Pos& around, int size, int cost, int inner, int outer)
+void UsrAI::ringAdd(vector<int>& g, const Pos& around, int size, int cost, int inner, int outer)
 {
-    if (outer < inner || around.dr < 0) return;
-
-    const size_t cells = (size_t)MAP_L * MAP_U;
-    if (ringStamp.size() != cells) ringStamp.assign(cells, 0);
-    const int tick = ++ringTick;  // 代替整图清零
-
-    vector<Pos> q;  // 环带半径很小, 局部队列即可
-    q.reserve(64);
-    for (int i = around.dr; i < around.dr + size; i++)
-        for (int j = around.ur; j < around.ur + size; j++)
+    const int dr1 = around.dr + size - 1, ur1 = around.ur + size - 1;
+    for (int i = around.dr - outer; i <= dr1 + outer; i++)
+        for (int j = around.ur - outer; j <= ur1 + outer; j++)
         {
-            if (!inMap(i, j) || ringStamp[cellIdx(i, j)] == tick) continue;
-            q.push_back({i, j});
-            ringStamp[cellIdx(i, j)] = tick;
+            if (!inMap(i, j)) continue;
+            const int d = max(max(around.dr - i, i - dr1), max(max(around.ur - j, j - ur1), 0));  // 到矩形的切比雪夫距离
+            if (d >= inner) g[cellIdx(i, j)] += cost;
         }
-
-    size_t head = 0;
-    for (int r = 0; head < q.size(); r++)
-    {
-        if (r > outer) return;
-        const size_t u = q.size();
-        for (; head < u; head++)
-        {
-            const Pos crt = q[head];
-            if (r >= inner) g[cellIdx(crt.dr, crt.ur)] += cost;
-            for (int k = 0; k < 8; k++)
-            {
-                const Pos next = {crt.dr + dx[k], crt.ur + dy[k]};
-                if (!inMap(next.dr, next.ur)) continue;
-
-                const int nidx = cellIdx(next.dr, next.ur);
-                if (ringStamp[nidx] == tick || blockCell[nidx]) continue;
-
-                q.push_back(next);
-                ringStamp[nidx] = tick;
-            }
-        }
-    }
 }
 
-bool Mgr::locate(int sn, FloatPos* at) const
+bool UsrAI::locate(int sn, FloatPos* at) const
 {
     FloatPos p;
     if (const tagFarmer* f = farmer(sn)) p = FloatPos(f->DR, f->UR);
@@ -362,7 +312,7 @@ bool Mgr::locate(int sn, FloatPos* at) const
     return true;
 }
 
-void Mgr::orderFrame()
+void UsrAI::orderFrame()
 {
     const double cellLen = (double)BLOCKSIDELENGTH;
     for (auto it = orders.begin(); it != orders.end();)
@@ -410,7 +360,7 @@ void Mgr::orderFrame()
     }
 }
 
-void Mgr::orderMove(int sn, const FloatPos& at, bool back)
+void UsrAI::orderMove(int sn, const FloatPos& at, bool back)
 {
     const tagArmy* a = army(sn);  // 移动令只下给军队和祭司
     if (!a) return;
@@ -431,7 +381,7 @@ void Mgr::orderMove(int sn, const FloatPos& at, bool back)
     HumanMove(sn, at.dr, at.ur);
 }
 
-void Mgr::orderAction(int sn, int target)
+void UsrAI::orderAction(int sn, int target)
 {
     if (const tagBuilding* b = building(sn))
     {
@@ -458,97 +408,41 @@ void Mgr::orderAction(int sn, int target)
     if (obj != target || state == HUMAN_STATE_IDLE) HumanAction(sn, target);
 }
 
-bool Mgr::orderStuck(int sn) const
+bool UsrAI::orderStuck(int sn) const
 {
     auto it = orders.find(sn);
     return it != orders.end() && it->second.stuck;
 }
 
-void Mgr::dutyFrame()
+void UsrAI::dutyFrame()
 {
     vector<int> dead;
     for (const auto& it : duty)
         if (!farmer(it.first)) dead.push_back(it.first);
-    for (int sn : dead) dropDuty(sn, false);
+    for (int sn : dead) dropDuty(sn);
 }
 
-void Mgr::laborFrame()
-{
-    laborPool.clear();
-    for (const auto& it : farmerMap)
-        if (!duty.count(it.first)) laborPool.push_back(it.first);
-}
-
-void Mgr::laborRelease()
-{
-    for (int k = 0; k < RK_COUNT; k++)
-    {
-        GatherPool& p = pools[k];
-        int assigned = 0;
-        for (const GatherSpot& s : p.spots)
-            if (holder.count(s.sn)) assigned++;
-
-        int excess = assigned - min(p.desired, (int)p.spots.size());
-        for (int i = p.spots.size() - 1; i >= 0 && excess > 0; i--)
-        {
-            auto it = holder.find(p.spots[i].sn);
-            if (it == holder.end()) continue;
-
-            dropDuty(it->second, true);
-            excess--;
-        }
-    }
-}
-
-double Mgr::workerCost(int sn, const FloatPos& at, bool steal) const
+double UsrAI::workerCost(int sn, const FloatPos& at) const
 {
     const tagFarmer* f = farmer(sn);
     if (!f || workerReserved(sn)) return -1.0;
 
-    const bool gathering = duty.count(sn) > 0;  // 非专职岗位只剩采集
-    if (gathering && !steal) return -1.0;
-
     double cost = dis(at, FloatPos(f->DR, f->UR)) / (double)BLOCKSIDELENGTH;
-    if (gathering)
-    {
-        cost += WORK_SWITCH_COST;
-        if (f->Resource > 0) cost += WORK_CARRY_COST;
-    }
+    if (duty.count(sn)) cost += WORK_SWITCH_COST + (f->Resource > 0 ? WORK_CARRY_COST : 0.0);  // 非专职岗位只剩采集
     return cost;
 }
 
-void Mgr::workerCands(vector<WorkerCand>& out) const
-{
-    out.clear();
-    out.reserve(farmerMap.size());
-    for (const auto& it : farmerMap)  // 顺序与 pickWorker 里的遍历一致
-    {
-        const tagFarmer* f = it.second;
-        if (workerReserved(it.first)) continue;
-
-        WorkerCand c;
-        c.sn = it.first;
-        c.at = FloatPos(f->DR, f->UR);
-        c.extra = 0.0;
-        if (duty.count(it.first))  // 非专职岗位只剩采集
-        {
-            c.extra = WORK_SWITCH_COST;
-            if (f->Resource > 0) c.extra += WORK_CARRY_COST;
-        }
-        out.push_back(c);
-    }
-}
-
-int Mgr::pickCand(const vector<WorkerCand>& cand, const FloatPos& at, double* outCost) const
+int UsrAI::pickWorker(const FloatPos& at, double* outCost) const
 {
     int best = -1;
     double bestCost = 0.0;
-    for (const WorkerCand& c : cand)
+    for (const auto& it : farmerMap)
     {
-        const double cost = dis(at, c.at) / (double)BLOCKSIDELENGTH + c.extra;
-        if (best < 0 || cost < bestCost - EPS || (fabs(cost - bestCost) <= EPS && c.sn < best))
+        const double cost = workerCost(it.first, at);
+        if (cost < 0) continue;
+        if (best < 0 || cost < bestCost - EPS || (fabs(cost - bestCost) <= EPS && it.first < best))
         {
-            best = c.sn;
+            best = it.first;
             bestCost = cost;
         }
     }
@@ -556,51 +450,14 @@ int Mgr::pickCand(const vector<WorkerCand>& cand, const FloatPos& at, double* ou
     return best;
 }
 
-int Mgr::pickWorker(const FloatPos& at, bool steal, double* outCost) const
+void UsrAI::setDuty(int sn, int kind, int target)
 {
-    int best = -1;
-    double bestCost = 0.0;
-
-    auto consider = [&](int sn)
-    {
-        const double cost = workerCost(sn, at, steal);
-        if (cost < 0) return;
-        if (best < 0 || cost < bestCost - EPS || (fabs(cost - bestCost) <= EPS && sn < best))
-        {
-            best = sn;
-            bestCost = cost;
-        }
-    };
-
-    if (steal)
-        for (const auto& it : farmerMap) consider(it.first);
-    else
-        for (int sn : laborPool) consider(sn);
-
-    if (outCost) *outCost = best < 0 ? -1.0 : bestCost;
-    return best;
-}
-
-void Mgr::claimWorker(int sn)
-{
-    dropDuty(sn, false);
-
-    auto it = find(laborPool.begin(), laborPool.end(), sn);
-    if (it != laborPool.end())
-    {
-        *it = laborPool.back();
-        laborPool.pop_back();
-    }
-}
-
-void Mgr::setDuty(int sn, int kind, int target)
-{
-    claimWorker(sn);
+    dropDuty(sn);
     duty[sn] = {kind, target};
     if (kind == D_GATHER || kind == D_FARM) holder[target] = sn;
 }
 
-void Mgr::dropDuty(int sn, bool toFree)
+void UsrAI::dropDuty(int sn)
 {
     auto it = duty.find(sn);
     if (it == duty.end()) return;
@@ -608,17 +465,9 @@ void Mgr::dropDuty(int sn, bool toFree)
     if (it->second.kind == D_GATHER || it->second.kind == D_FARM) holder.erase(it->second.target);
     duty.erase(it);
     orders.erase(sn);
-    if (toFree) freeWorker(sn);
 }
 
-void Mgr::freeWorker(int sn)
-{
-    if (!farmer(sn) || duty.count(sn)) return;
-    if (find(laborPool.begin(), laborPool.end(), sn) != laborPool.end()) return;
-    laborPool.push_back(sn);
-}
-
-vector<int> Mgr::crewOf(int kind, int target) const
+vector<int> UsrAI::crewOf(int kind, int target) const
 {
     vector<int> out;
     for (const auto& it : duty)
@@ -627,24 +476,27 @@ vector<int> Mgr::crewOf(int kind, int target) const
     return out;
 }
 
-bool Mgr::workerReserved(int sn) const
+bool UsrAI::workerReserved(int sn) const
 {
     auto it = duty.find(sn);
     return it != duty.end() && it->second.kind != D_GATHER;
 }
 
-double Mgr::depotCost(const FloatPos& at, int depotType) const
+double UsrAI::depotCost(const FloatPos& at, int depotType) const
 {
     double best = -1;
-    for (const FloatPos& c : depotDone[depotType == BUILDING_STOCK ? 1 : 0])
+    for (const auto& it : buildingMap)
     {
-        const double v = dis(at, c);
+        const tagBuilding& b = *it.second;
+        if (b.Percent < 100 || (b.Type != BUILDING_CENTER && b.Type != depotType)) continue;
+
+        const double v = dis(at, centerOf({b.BlockDR, b.BlockUR}, b.Type));
         if (best < 0 || v < best) best = v;
     }
     return best < 0 ? dis(at, baseF) : best;
 }
 
-void Mgr::gatherWatch()
+void UsrAI::gatherWatch()
 {
     for (auto it = resBlack.begin(); it != resBlack.end();)
         if (gameFrame >= it->second) it = resBlack.erase(it);
@@ -659,7 +511,7 @@ void Mgr::gatherWatch()
     }
 }
 
-bool Mgr::reachable(const tagResource* r) const
+bool UsrAI::reachable(const tagResource* r) const
 {
     const int size = resourceSize(r->Type);
     const Pos a = resourceCell(r);
@@ -674,7 +526,7 @@ bool Mgr::reachable(const tagResource* r) const
     return false;
 }
 
-void Mgr::huntFrame()
+void UsrAI::huntFrame()
 {
     for (auto bit = huntBatches.begin(); bit != huntBatches.end();)  // 已稳定的批次只保留仍存在的尸体
     {
@@ -715,7 +567,7 @@ void Mgr::huntFrame()
             if (!batch.empty()) huntBatches.push_back(batch);
 
             huntTargets.clear();
-            for (int sn : crewOf(D_HUNT, -1)) dropDuty(sn, false);
+            for (int sn : crewOf(D_HUNT, -1)) dropDuty(sn);
         }
     }
 
@@ -757,7 +609,7 @@ void Mgr::huntFrame()
     sort(huntTargets.begin(), huntTargets.end());
 }
 
-void Mgr::runHunt()
+void UsrAI::runHunt()
 {
     if (huntTargets.empty()) return;
 
@@ -796,7 +648,7 @@ void Mgr::runHunt()
 
     while ((int)crew.size() < CREW_HUNT)
     {
-        const int sn = pickWorker(FloatPos(target->DR, target->UR), true);
+        const int sn = pickWorker(FloatPos(target->DR, target->UR));
         if (sn < 0) break;
         setDuty(sn, D_HUNT, -1);
         crew.push_back(sn);
@@ -805,7 +657,7 @@ void Mgr::runHunt()
     for (int sn : crew) orderAction(sn, target->SN);
 }
 
-void Mgr::huntDepotWant(vector<Pos>& out) const
+void UsrAI::huntDepotWant(vector<Pos>& out) const
 {
     // 同时存在多个历史批次时，只处理当前采集人数最多的一批
     vector<Pos> bestSpots;
@@ -840,114 +692,57 @@ void Mgr::huntDepotWant(vector<Pos>& out) const
     out.insert(out.end(), bestSpots.begin(), bestSpots.end());
 }
 
-void Mgr::gatherFrame()
+void UsrAI::gatherFrame()
 {
     gatherWatch();
 
-    // 池的内容只由这些输入决定, 它们不变就不必重建; 兜底每 GATHER_PERIOD 帧重建一次
-    long long corpse = 0;  // 羚羊咽气不改变资源条数, 单独数一下
-    for (const auto& it : resourceMap)
-        if (it.second->Type == RESOURCE_GAZELLE && it.second->Blood <= 0) corpse++;
+    for (int k = 0; k < RK_COUNT; k++) pools[k].clear();
+    spotKind.clear();
 
-    long long sig = (long long)resourceMap.size();
-    sig = sig * 1000003 + corpse;
-    sig = sig * 1000003 + (long long)resBlack.size();
-    sig = sig * 1000003 + navVer;
-    sig = sig * 1000003 + (long long)(depotAll[0].size() * 64 + depotAll[1].size());
-    sig = sig * 1000003 + (long long)(depotDone[0].size() * 64 + depotDone[1].size());
-    sig = sig * 1000003 + buildingCount(BUILDING_FARM) * 64 + buildingCount(BUILDING_FARM, true);
-
-    if (sig != gatherSig || frameTick - gatherAt >= GATHER_PERIOD)
+    auto add = [&](ResKind k, int sn, const Pos& at, const FloatPos& from)
     {
-        gatherRebuild();
-        gatherSig = sig;
-        gatherAt = frameTick;
-        return;
-    }
-
-    // 没重建也要保证不会有人守着已经消失的目标
-    for (int k = 0; k < RK_COUNT; k++)
-    {
-        vector<GatherSpot>& sp = pools[k].spots;
-        sp.erase(remove_if(sp.begin(), sp.end(),
-                           [&](const GatherSpot& s)
-        {
-            if (resource(s.sn) || building(s.sn)) return false;
-            gatherSel.erase(s.sn);
-            return true;
-        }),
-                 sp.end());
-    }
-
-    vector<int> stale;
-    for (const auto& it : holder)
-        if (!gatherSel.count(it.first)) stale.push_back(it.second);
-    for (int sn : stale) dropDuty(sn, false);
-}
-
-void Mgr::gatherRebuild()
-{
-    for (int k = 0; k < RK_COUNT; k++) pools[k].spots.clear();
-
-    unordered_set<int>& selected = gatherSel;
-    selected.clear();
-    selected.reserve(resourceMap.size());
-
-    const bool anyBlack = !resBlack.empty();
-    const double range2 = (double)RES_RANGE * RES_RANGE;
+        GatherSpot s;
+        s.sn = sn;
+        s.at = at;
+        s.cost = depotCost(from, k == RK_BUSH || k == RK_FARM ? BUILDING_GRANARY : BUILDING_STOCK);
+        s.rate = gatherRate(k, s.cost);
+        pools[k].push_back(s);
+        spotKind[sn] = k;
+    };
 
     for (const auto& it : resourceMap)
     {
         const tagResource* r = it.second;
         const ResKind k = kindOf(r->Type);
-        if (k == RK_COUNT || (anyBlack && resBlack.count(r->SN))) continue;
-        if (k == RK_GAZELLE && r->Blood > 0) continue;  // 活羚羊只归猎人，普通经济只吃尸体
+        if (k == RK_COUNT || resBlack.count(r->SN)) continue;
+        if (k == RK_GAZELLE && r->Blood > 0) continue;  // 活羚羊只归猎人, 普通经济只吃尸体
 
         const Pos at = resourceCell(r);
-        if (!inMap(at.dr, at.ur)) continue;
-
-        const double ddr = at.dr - base.dr, dur = at.ur - base.ur;  // 比距离免开方
-        if (ddr * ddr + dur * dur > range2) continue;
+        if (!inMap(at.dr, at.ur) || dis(at, base) > RES_RANGE) continue;
         if ((k == RK_WOOD || k == RK_GOLD) && !reachable(r)) continue;
-
-        GatherSpot s;
-        s.sn = r->SN;
-        s.at = at;
-        s.cost = depotCost(FloatPos(r->DR, r->UR), k == RK_BUSH ? BUILDING_GRANARY : BUILDING_STOCK);
-        s.rate = gatherRate(k, s.cost);
-
-        pools[k].spots.push_back(s);
-        selected.insert(s.sn);
+        add(k, r->SN, at, FloatPos(r->DR, r->UR));
     }
 
-    for (int sn : buildingsOf(BUILDING_FARM))  // 已完工农田同样作为采集点
+    const int half = buildingSize(BUILDING_FARM) / 2;
+    for (int sn : buildingsOf(BUILDING_FARM))  // 已完工农田同样作为采集点, 取中心格
     {
         const tagBuilding* b = building(sn);
         if (!b || b->Percent < 100) continue;
-
-        const int half = buildingSize(BUILDING_FARM) / 2;
-        GatherSpot s;
-        s.sn = sn;
-        s.at = Pos(b->BlockDR + half, b->BlockUR + half);  // FloatPos(at) 转几何中心
-        s.cost = depotCost(FloatPos(s.at), BUILDING_GRANARY);
-        s.rate = gatherRate(RK_FARM, s.cost);
-
-        pools[RK_FARM].spots.push_back(s);
-        selected.insert(s.sn);
+        const Pos at(b->BlockDR + half, b->BlockUR + half);
+        add(RK_FARM, sn, at, FloatPos(at));
     }
 
-    // 同类资源下即产出降序
     for (int k = 0; k < RK_COUNT; k++)
-        sort(pools[k].spots.begin(), pools[k].spots.end(),
+        sort(pools[k].begin(), pools[k].end(),
              [](const GatherSpot& a, const GatherSpot& b) { return a.cost != b.cost ? a.cost < b.cost : a.sn < b.sn; });
 
-    vector<int> stale;
+    vector<int> stale;  // 采集点已失效的绑定
     for (const auto& it : holder)
-        if (!selected.count(it.first)) stale.push_back(it.second);
-    for (int sn : stale) dropDuty(sn, false);
+        if (!spotKind.count(it.first)) stale.push_back(it.second);
+    for (int sn : stale) dropDuty(sn);
 }
 
-int Mgr::econPick(const int weight[E_COUNT], const int count[E_COUNT], const int cap[E_COUNT]) const
+int UsrAI::econPick(const int weight[E_COUNT], const int count[E_COUNT], const int cap[E_COUNT]) const
 {
     int pick = -1;
     double best = -1.0;
@@ -961,80 +756,82 @@ int Mgr::econPick(const int weight[E_COUNT], const int count[E_COUNT], const int
     return pick;
 }
 
-void Mgr::runEconomy()
+void UsrAI::runEconomy()
 {
-    for (int k = 0; k < RK_COUNT; k++)
-        for (const GatherSpot& s : pools[k].spots)
-        {
-            auto it = holder.find(s.sn);
-            if (it != holder.end()) orderAction(it->second, s.sn);
-        }
+    const double cellsPerSec = (double)HUMAN_SPEED * 25.0 / (double)BLOCKSIDELENGTH;
 
-    int need[RK_COUNT] = {};
-    for (int k = 0; k < RK_COUNT; k++)
+    int cur[E_COUNT] = {};
+    unordered_map<int, int> catOf;  // 在岗采集者 -> 当前类别
+    for (const auto& it : duty)
     {
-        int assigned = 0;
-        for (const GatherSpot& s : pools[k].spots)
-            if (holder.count(s.sn)) assigned++;
-        need[k] = max(0, min(pools[k].desired, (int)pools[k].spots.size()) - assigned);
+        if (it.second.kind != D_GATHER && it.second.kind != D_FARM) continue;
+        auto k = spotKind.find(it.second.target);
+        if (k == spotKind.end()) continue;
+
+        const int c = econCat(k->second);
+        cur[c]++;
+        catOf[it.first] = c;
+        orderAction(it.first, it.second.target);
     }
 
-    // 贪心: 每轮在所有(空闲村民, 缺人岗位)中取 走路时间 + 单趟周期 最小的一对
-    const double speedPerSec = (double)HUMAN_SPEED * 25.0;
-    bool anyNeed = false;
-    for (int k = 0; k < RK_COUNT; k++)
-        if (need[k] > 0) anyNeed = true;
-
-    vector<pair<int, FloatPos>> idlers;  // 与 laborPool 同序
-    while (anyNeed && !laborPool.empty())
+    // 每轮在(候选人, 缺口类别的空闲点)中取代价最小的一对, 单位为格:
+    // 走到该点的距离 + 调岗/丢货惩罚 + ECON_TRIPS 趟的采集周期
+    // 候选人 = 空闲村民 + 超额类别里的在岗者, 所以"裁谁"和"派去哪"一起决定
+    while (true)
     {
-        idlers.clear();
-        for (int sn : laborPool)
-        {
-            const tagFarmer* f = farmer(sn);
-            if (f) idlers.push_back({sn, FloatPos(f->DR, f->UR)});
-        }
-        if (idlers.empty()) break;
+        bool short_ = false;
+        for (int r = 0; r < E_COUNT; r++)
+            if (cur[r] < quota[r]) short_ = true;
+        if (!short_) break;
 
-        int bestWorker = -1, bestTarget = -1, bestGroup = -1;
+        int bestWorker = -1, bestSpot = -1, bestKind = -1;
         double bestCost = 0.0;
-
-        for (int k = 0; k < RK_COUNT; k++)
+        for (const auto& fit : farmerMap)
         {
-            if (need[k] <= 0) continue;
-            for (const GatherSpot& s : pools[k].spots)
+            const int sn = fit.first;
+            double extra = 0.0;
+            if (duty.count(sn))
             {
-                if (holder.count(s.sn)) continue;
+                auto c = catOf.find(sn);
+                if (c == catOf.end() || cur[c->second] <= quota[c->second]) continue;  // 专职, 或本类不超额
+                extra = WORK_SWITCH_COST + (fit.second->Resource > 0 ? WORK_CARRY_COST : 0.0);
+            }
 
-                const double cycleSec = CARRY_LIMIT / max(s.rate, EPS);
-                const FloatPos at(s.at);
-                for (const auto& w : idlers)
+            const FloatPos at(fit.second->DR, fit.second->UR);
+            for (int k = 0; k < RK_COUNT; k++)
+            {
+                if (cur[econCat(k)] >= quota[econCat(k)]) continue;
+
+                int seen = 0;
+                for (const GatherSpot& s : pools[k])
                 {
-                    const double cost = dis(w.second, at) / speedPerSec + cycleSec;
+                    if (holder.count(s.sn)) continue;
+                    if (++seen > ECON_SPOT_TOP) break;
+
+                    const double cycle = CARRY_LIMIT / max(s.rate, EPS) * cellsPerSec;
+                    const double cost = dis(at, FloatPos(s.at)) / (double)BLOCKSIDELENGTH + extra + ECON_TRIPS * cycle;
                     if (bestWorker < 0 || cost < bestCost)
                     {
-                        bestWorker = w.first;
-                        bestTarget = s.sn;
-                        bestGroup = k;
+                        bestWorker = sn;
+                        bestSpot = s.sn;
+                        bestKind = k;
                         bestCost = cost;
                     }
                 }
             }
         }
-
         if (bestWorker < 0) break;
 
-        setDuty(bestWorker, bestGroup == RK_FARM ? D_FARM : D_GATHER, bestTarget);
-        need[bestGroup]--;
-        orderAction(bestWorker, bestTarget);
-
-        anyNeed = false;
-        for (int k = 0; k < RK_COUNT; k++)
-            if (need[k] > 0) anyNeed = true;
+        auto old = catOf.find(bestWorker);
+        if (old != catOf.end()) cur[old->second]--;
+        setDuty(bestWorker, bestKind == RK_FARM ? D_FARM : D_GATHER, bestSpot);
+        cur[econCat(bestKind)]++;
+        catOf[bestWorker] = econCat(bestKind);
+        orderAction(bestWorker, bestSpot);
     }
 }
 
-Stock Mgr::phaseNeed() const
+Stock UsrAI::phaseNeed() const
 {
     Stock need;
     for (const Want& w : builds) need.wood += buildWoodCost(w.id);
@@ -1042,33 +839,18 @@ Stock Mgr::phaseNeed() const
     return need;
 }
 
-void Mgr::econPlan(int phase)
+void UsrAI::econPlan(int phase)
 {
-    for (int k = 0; k < RK_COUNT; k++) pools[k].desired = 0;
+    for (int r = 0; r < E_COUNT; r++) quota[r] = 0;
     wantFarm = 0;
 
-    int reserved = 0;  // 工地/修塔/打猎不参与经济分配
-    for (const auto& it : duty)
-        if (it.second.kind != D_GATHER && it.second.kind != D_FARM) reserved++;
-
-    const int pop = max(0, (int)farmerMap.size() - reserved);
-    if (pop <= 0) return;
-
-    vector<int> food;
-    vector<pair<double, int>> slots_;  // rate kind
-    for (ResKind k : {RK_GAZELLE, RK_BUSH, RK_FARM})
-        for (const GatherSpot& s : pools[k].spots) slots_.push_back({s.rate, k});
-    sort(slots_.begin(), slots_.end(), greater<pair<double, int>>());
-    food.reserve(slots_.size());
-    for (auto& s : slots_) food.push_back(s.second);
-
-    int cursor = 0;
-    auto takeFood = [&]()
+    int pop = 0;  // 工地/修塔/打猎不参与经济分配
+    for (const auto& it : farmerMap)
     {
-        if (cursor >= food.size()) return false;
-        pools[food[cursor++]].desired++;
-        return true;
-    };
+        auto d = duty.find(it.first);
+        if (d == duty.end() || d->second.kind == D_GATHER || d->second.kind == D_FARM) pop++;
+    }
+    if (pop <= 0) return;
 
     const Stock need = phaseNeed();
     const int left[E_COUNT] = {need.wood, need.meat, need.gold};
@@ -1077,75 +859,50 @@ void Mgr::econPlan(int phase)
     int weight[E_COUNT];
     for (int r = 0; r < E_COUNT; r++)
     {
-        if (econSurplus[r])
-        {
-            // 新需求出现必须立即响应
-            if (have[r] < left[r])
-            {
-                econSurplus[r] = false;
-                econSwitchAfter[r] = gameFrame + SURPLUS_HOLD;
-            }
-        }
-        else if (gameFrame >= econSwitchAfter[r] && have[r] >= left[r] + SURPLUS_BAND) { econSurplus[r] = true; }
+        // 数量带防抖: 超出需求 SURPLUS_BAND 才判富余, 跌回需求以下立刻取消
+        if (econSurplus[r] && have[r] < left[r]) econSurplus[r] = false;
+        else if (!econSurplus[r] && have[r] >= left[r] + SURPLUS_BAND) econSurplus[r] = true;
 
         weight[r] = ECON_WEIGHT[phase][r];
         if (weight[r] > 0 && econSurplus[r]) weight[r] = SURPLUS_WEIGHT;
     }
 
-    const int currentCap[E_COUNT] = {(int)pools[RK_WOOD].spots.size(), (int)food.size(),
-                                     (int)pools[RK_GOLD].spots.size()};
+    const int cap[E_COUNT] = {(int)pools[RK_WOOD].size(),
+                              (int)(pools[RK_GAZELLE].size() + pools[RK_BUSH].size() + pools[RK_FARM].size()),
+                              (int)pools[RK_GOLD].size()};
 
-    // 有市场时食物按比例先超额算, 超出现有岗位的部分就是该开农田的信号
-    const int planCap[E_COUNT] = {currentCap[E_WOOD], buildAvailable(BUILDING_FARM) ? pop : currentCap[E_FOOD],
-                                  currentCap[E_GOLD]};
-
+    // 有市场时食物先按比例超额算, 超出现有岗位的部分就是该开农田的信号
+    const int plan[E_COUNT] = {cap[E_WOOD], buildAvailable(BUILDING_FARM) ? pop : cap[E_FOOD], cap[E_GOLD]};
     int raw[E_COUNT] = {};
     for (int n = 0; n < pop; n++)
     {
-        const int r = econPick(weight, raw, planCap);
+        const int r = econPick(weight, raw, plan);
         if (r < 0) break;
         raw[r]++;
     }
 
-    pools[RK_WOOD].desired = min(raw[E_WOOD], currentCap[E_WOOD]);
-    pools[RK_GOLD].desired = min(raw[E_GOLD], currentCap[E_GOLD]);
-
-    // 一次只开一块农田
-    const bool farmPending =
-        buildingCount(BUILDING_FARM) != buildingCount(BUILDING_FARM, true) || queuedBuild(BUILDING_FARM) > 0;
-
-    int cnt = 0;
+    int live = 0;  // 还没打下来的羚羊很快会变成食物岗位
     for (int sn : huntTargets)
     {
         const tagResource* r = resource(sn);
-        if (r && r->Type == RESOURCE_GAZELLE && r->Blood > 0) cnt++;
+        if (r && r->Type == RESOURCE_GAZELLE && r->Blood > 0) live++;
     }
-    if (raw[E_FOOD] > currentCap[E_FOOD] + cnt && !farmPending) wantFarm = 1;
+    const bool farmPending =
+        buildingCount(BUILDING_FARM) != buildingCount(BUILDING_FARM, true) || queuedBuild(BUILDING_FARM) > 0;
+    if (raw[E_FOOD] > cap[E_FOOD] + live && !farmPending) wantFarm = 1;  // 一次只开一块
 
-    const int foodNow = min(raw[E_FOOD], currentCap[E_FOOD]);
-    for (int n = 0; n < foodNow; n++) takeFood();
-
-    int now[E_COUNT] = {pools[RK_WOOD].desired, foodNow, pools[RK_GOLD].desired};
-    int assigned = now[E_WOOD] + now[E_FOOD] + now[E_GOLD];
-
-    // 食物岗位不够装下战略目标时, 余下的人在本阶段非零权重资源之间补位
-    while (assigned < pop)
+    // 定额不超过岗位数, 装不下的人在非零权重资源之间补位
+    int total = 0;
+    for (int r = 0; r < E_COUNT; r++) total += quota[r] = min(raw[r], cap[r]);
+    for (; total < pop; total++)
     {
-        const int r = econPick(weight, now, currentCap);
+        const int r = econPick(weight, quota, cap);
         if (r < 0) break;
-
-        if (r == E_FOOD)
-        {
-            if (!takeFood()) break;
-        }
-        else pools[r == E_WOOD ? RK_WOOD : RK_GOLD].desired++;
-
-        now[r]++;
-        assigned++;
+        quota[r]++;
     }
 }
 
-bool Mgr::buildAvailable(int type) const
+bool UsrAI::buildAvailable(int type) const
 {
     switch (type)
     {
@@ -1155,62 +912,42 @@ bool Mgr::buildAvailable(int type) const
     }
 }
 
-void Mgr::buildFrame()
+void UsrAI::buildFrame()
 {
     builds.clear();
-
-    // 智能建造
     granaryPendings.clear();
-    depotWant(RK_BUSH, granaryPendings);
-
     stockPendings.clear();
+
     huntDepotWant(stockPendings);  // 整群打完后按整批尸体联合选址
-    depotWant(RK_GOLD, stockPendings);
 
-    // 历史农田只有仍在实际耕作时才保留仓储需求
-    for (int sn : buildingsOf(BUILDING_FARM))
+    // 有人在采且运距过远的浆果/农田/金矿, 各自产生对应存放点需求
+    const double far_ = DEPOT_FAR * (double)BLOCKSIDELENGTH;
+    for (ResKind k : {RK_BUSH, RK_FARM, RK_GOLD})
     {
-        const tagBuilding* b = building(sn);
-        if (!b) continue;
-
-        const bool planned = b->Percent < 100;
-        const bool active = holder.count(sn) > 0;
-        if (!planned && !active) continue;
-
-        const FloatPos at = centerOf({b->BlockDR, b->BlockUR}, BUILDING_FARM);
-        if (depotCost(at, BUILDING_GRANARY) <= DEPOT_FAR * (double)BLOCKSIDELENGTH) continue;
-
-        const Pos c(b->BlockDR, b->BlockUR);
-        if (!depotCovered(BUILDING_GRANARY, c) && depotRoom(c)) granaryPendings.push_back(c);
+        const int type = k == RK_GOLD ? BUILDING_STOCK : BUILDING_GRANARY;
+        for (const GatherSpot& s : pools[k])
+        {
+            if (!holder.count(s.sn) || s.cost <= far_) continue;
+            if (depotCovered(type, s.at) || !depotRoom(s.at)) continue;
+            (type == BUILDING_STOCK ? stockPendings : granaryPendings).push_back(s.at);
+        }
     }
 }
 
-bool Mgr::depotCovered(int depotType, const Pos& c) const
+bool UsrAI::depotCovered(int depotType, const Pos& c) const
 {
     const FloatPos at(c);
-    const double far_ = DEPOT_FAR * (double)BLOCKSIDELENGTH;
-    for (const FloatPos& b : depotAll[depotType == BUILDING_STOCK ? 1 : 0])
-        if (dis(at, b) <= far_) return true;
+    for (const auto& it : buildingMap)
+    {
+        const tagBuilding& b = *it.second;
+        if (b.Type != BUILDING_CENTER && b.Type != depotType) continue;
+
+        if (dis(at, centerOf({b.BlockDR, b.BlockUR}, b.Type)) <= DEPOT_FAR * (double)BLOCKSIDELENGTH) return true;
+    }
     return false;
 }
 
-double Mgr::depotBenefit(int depotType, const Pos& site) const
-{
-    const vector<Pos>& pending = depotType == BUILDING_GRANARY ? granaryPendings : stockPendings;
-    if (pending.empty()) return 0.0;
-
-    const FloatPos candidate = centerOf(site, depotType);
-
-    double saved = 0.0;
-    for (const Pos& p : pending)
-    {
-        const FloatPos at(p);
-        saved += max(0.0, depotCost(at, depotType) - dis(at, candidate));
-    }
-    return saved / (double)BLOCKSIDELENGTH;
-}
-
-bool Mgr::depotRoom(const Pos& c) const
+bool UsrAI::depotRoom(const Pos& c) const
 {
     for (int a = c.dr - DEPOT_FAR; a <= c.dr + DEPOT_FAR; a++)
         for (int b = c.ur - DEPOT_FAR; b <= c.ur + DEPOT_FAR; b++)
@@ -1218,187 +955,82 @@ bool Mgr::depotRoom(const Pos& c) const
     return false;
 }
 
-void Mgr::depotWant(ResKind k, vector<Pos>& out) const
+const vector<int>& UsrAI::placeCost(int type)
 {
-    const double far_ = DEPOT_FAR * (double)BLOCKSIDELENGTH;
-    const int depotType = k == RK_BUSH ? BUILDING_GRANARY : BUILDING_STOCK;
+    const int v = costVariant(type);
+    vector<int>& g = costCache[v];
+    if (costAt[v] == gameFrame) return g;
+    costAt[v] = gameFrame;
 
-    const GatherSpot* anchor = nullptr;
-    for (const GatherSpot& s : pools[k].spots)
+    g.assign((size_t)MAP_L * MAP_U, 0);
+    for (size_t idx = 0; idx < g.size(); idx++) g[idx] = nav[idx] < 0 ? MAP_L + MAP_U : nav[idx];  // 距离
+
+    for (const auto& it : resourceMap)  // 贴资源
     {
-        if (!holder.count(s.sn)) continue;
-        if (s.cost <= far_) continue;
-        if (depotCovered(depotType, s.at) || !depotRoom(s.at)) continue;
-        if (!anchor || s.cost > anchor->cost) anchor = &s;
+        const tagResource* r = it.second;
+        if (r->Type == RESOURCE_GAZELLE && r->Blood > 0) continue;
+        ringAdd(g, resourceCell(r), resourceSize(r->Type), PLACE_ADJACENT, 1, 1);
     }
-    if (anchor) out.push_back(anchor->at);
+
+    for (const auto& it : buildingMap)
+    {
+        const tagBuilding& b = *it.second;
+        const Pos p(b.BlockDR, b.BlockUR);
+        ringAdd(g, p, buildingSize(b.Type), PLACE_ADJACENT, 0, 1);  // 贴建筑
+
+        const bool granary = b.Type == BUILDING_GRANARY || b.Type == BUILDING_CENTER;
+        if (v == 1 && granary) ringAdd(g, p, 3, PLACE_BONUS, 2, 5);                                  // 农田靠近谷仓
+        if (v == 2 && (granary || b.Type == BUILDING_STOCK)) ringAdd(g, p, 3, PLACE_ADJACENT, 0, 5);  // 别挡存放点
+    }
+    return g;
 }
 
-int Mgr::costVariant(int type)
-{
-    if (type == BUILDING_FARM) return 1;
-    if (type == BUILDING_ARMYCAMP || type == BUILDING_RANGE || type == BUILDING_HOME || type == BUILDING_MARKET)
-        return 2;
-    return 0;
-}
-
-void Mgr::costPrepare(int variant)
-{
-    const size_t cells = (size_t)MAP_L * MAP_U;
-
-    if (costBaseAt != frameTick)  // 与建筑类型无关的三层: 距离, 贴建筑, 贴资源
-    {
-        costBaseMap.assign(cells, 0);
-
-        for (size_t idx = 0; idx < cells; idx++) costBaseMap[idx] = nav[idx] == -1 ? MAP_L + MAP_U : nav[idx];
-
-        for (const auto& it : buildingMap)
-            ringAdd(costBaseMap, {it.second->BlockDR, it.second->BlockUR}, buildingSize(it.second->Type),
-                    PLACE_ADJACENT, 0, 1);
-
-        for (const auto& it : resourceMap)
-        {
-            const tagResource* r = it.second;
-            if (r->Type == RESOURCE_GAZELLE && r->Blood > 0) continue;
-
-            const int len = resourceSize(r->Type);
-            const Pos anchor = resourceCell(r);
-            const int dr = anchor.dr, ur = anchor.ur;
-
-            for (int a = dr - 1; a <= dr + len; a++)
-                for (int b = ur - 1; b <= ur + len; b++)
-                {
-                    if (!inMap(a, b)) continue;
-                    if (a >= dr && a < dr + len && b >= ur && b < ur + len) continue;
-                    costBaseMap[cellIdx(a, b)] += PLACE_ADJACENT;
-                }
-        }
-        costBaseAt = frameTick;
-    }
-
-    if (costVarAt[variant] == frameTick) return;
-
-    vector<int>& g = costVarMap[variant];
-    g = costBaseMap;
-
-    if (variant == 1)
-    {
-        for (const auto& it : buildingMap)
-            if (it.second->Type == BUILDING_GRANARY || it.second->Type == BUILDING_CENTER)
-                ringAdd(g, {it.second->BlockDR, it.second->BlockUR}, 3, PLACE_BONUS, 2, 5);
-    }
-    else if (variant == 2)
-    {
-        for (const auto& it : buildingMap)
-            if (it.second->Type == BUILDING_GRANARY || it.second->Type == BUILDING_STOCK ||
-                it.second->Type == BUILDING_CENTER)
-                ringAdd(g, {it.second->BlockDR, it.second->BlockUR}, 3, PLACE_ADJACENT, 0, 5);
-    }
-
-    // 二维前缀和: 之后任意 size*size 的面积和都是 O(1)
-    vector<long long>& sat = costVarSat[variant];
-    const size_t w = (size_t)MAP_U + 1;
-    sat.assign((size_t)(MAP_L + 1) * w, 0);
-    for (int i = 0; i < MAP_L; i++)
-    {
-        long long row = 0;
-        for (int j = 0; j < MAP_U; j++)
-        {
-            row += g[cellIdx(i, j)];
-            sat[(size_t)(i + 1) * w + j + 1] = sat[(size_t)i * w + j + 1] + row;
-        }
-    }
-    costVarAt[variant] = frameTick;
-}
-
-const vector<unsigned char>& Mgr::placeMask(int size)
-{
-    vector<unsigned char>& m = maskMap[size];
-    if (maskAt[size] == frameTick) return m;
-
-    m.assign((size_t)MAP_L * MAP_U, 0);
-    for (int i = 0; i + size <= MAP_L; i++)
-        for (int j = 0; j + size <= MAP_U; j++)
-        {
-            if (!canPlace(i, j, size)) continue;
-
-            bool near_ = false;  // 地基里至少有一格 nav 可达
-            for (int a = i; a < i + size && !near_; a++)
-                for (int b = j; b < j + size; b++)
-                    if (nav[cellIdx(a, b)] >= 0)
-                    {
-                        near_ = true;
-                        break;
-                    }
-            if (near_) m[cellIdx(i, j)] = 1;
-        }
-
-    maskAt[size] = frameTick;
-    return m;
-}
-
-Pos Mgr::findSpot(int type, int& firstWorker)
+Pos UsrAI::findSpot(int type, int& firstWorker)
 {
     firstWorker = -1;
     const int size = buildingSize(type);
-    const int variant = costVariant(type);
+    const vector<int>& g = placeCost(type);
 
-    costPrepare(variant);
-    const vector<unsigned char>& mask = placeMask(size);
-    const vector<long long>& sat = costVarSat[variant];
-    const size_t w = (size_t)MAP_U + 1;
-
-    // 存放点收益: 各加权点到现有存放点的运距与候选位置无关, 循环外先算好
+    // 存放点收益: 各需求点到现有存放点的运距与候选位置无关, 先算好
     const bool depot = type == BUILDING_GRANARY || type == BUILDING_STOCK;
     vector<pair<FloatPos, double>> pend;
-    bool hasDemand = false;
     if (depot)
-    {
-        const vector<Pos>& pending = type == BUILDING_GRANARY ? granaryPendings : stockPendings;
-        hasDemand = !pending.empty();
-        pend.reserve(pending.size());
-        for (const Pos& p : pending)
-        {
-            const FloatPos at(p);
-            pend.push_back({at, depotCost(at, type)});
-        }
-    }
+        for (const Pos& p : type == BUILDING_GRANARY ? granaryPendings : stockPendings)
+            pend.push_back({FloatPos(p), depotCost(FloatPos(p), type)});
 
-    vector<WorkerCand> cand;  // 整轮选址里 duty 不会变, 快照一次即可
-    workerCands(cand);
-    if (cand.empty()) return {-1, -1};
-
-    const int area = size * size;
     Pos best = {-1, -1};
     long long bestCost = 0;
     for (int i = 0; i + size <= MAP_L; i++)
         for (int j = 0; j + size <= MAP_U; j++)
         {
-            if (!mask[cellIdx(i, j)]) continue;
+            if (!canPlace(i, j, size)) continue;
 
-            long long v = sat[(size_t)(i + size) * w + j + size] - sat[(size_t)i * w + j + size] -
-                          sat[(size_t)(i + size) * w + j] + sat[(size_t)i * w + j];
-            v /= area;
+            long long v = 0;
+            bool reach = false;  // 地基里至少有一格 nav 可达
+            for (int a = i; a < i + size; a++)
+                for (int b = j; b < j + size; b++)
+                {
+                    v += g[cellIdx(a, b)];
+                    if (nav[cellIdx(a, b)] >= 0) reach = true;
+                }
+            if (!reach) continue;
+            v /= size * size;
 
             if (depot)
             {
-                const FloatPos candidate = centerOf({i, j}, type);
+                const FloatPos cand = centerOf({i, j}, type);
                 double saved = 0.0;
-                for (const auto& p : pend) saved += max(0.0, p.second - dis(p.first, candidate));
-
-                const double gain = saved / (double)BLOCKSIDELENGTH;
-                if (hasDemand && gain <= EPS) continue;
-                v -= (long long)(gain * 40);
+                for (const auto& p : pend) saved += max(0.0, p.second - dis(p.first, cand));
+                if (!pend.empty() && saved <= EPS) continue;
+                v -= (long long)(saved / (double)BLOCKSIDELENGTH * 40);
             }
-
-            if (best.dr >= 0 && v >= bestCost) continue;  // 失败惩罚与派人代价都非负, 先剪一刀
 
             auto fit = failedSpots.find(hashKey(type, i, j));
             if (fit != failedSpots.end()) v += (long long)PLACE_FAILED * fit->second;
-            if (best.dr >= 0 && v >= bestCost) continue;
+            if (best.dr >= 0 && v >= bestCost) continue;  // 派人代价非负, 不可能更优
 
             double claim = 0.0;
-            const int worker = pickCand(cand, centerOf({i, j}, type), &claim);
+            const int worker = pickWorker(centerOf({i, j}, type), &claim);
             if (worker < 0) continue;
             v += (long long)(claim + 0.5);
 
@@ -1412,14 +1044,14 @@ Pos Mgr::findSpot(int type, int& firstWorker)
     return best;
 }
 
-void Mgr::wantDepot(int depotType, int priority)
+void UsrAI::wantDepot(int depotType, int priority)
 {
     bool pending = depotType == BUILDING_GRANARY ? !granaryPendings.empty() : !stockPendings.empty();
     if (!pending || buildingCount(depotType, true) != buildingCount(depotType)) return;
     wantBuilding(depotType, buildingCount(depotType) + 1, priority);
 }
 
-int Mgr::queuedBuild(int type) const
+int UsrAI::queuedBuild(int type) const
 {
     int cnt = 0;
     for (const BuildSite& s : sites)
@@ -1429,7 +1061,7 @@ int Mgr::queuedBuild(int type) const
     return cnt;
 }
 
-void Mgr::wantBuilding(int buildingType, int total, int priority)
+void UsrAI::wantBuilding(int buildingType, int total, int priority)
 {
     if (!buildAvailable(buildingType)) return;
 
@@ -1437,7 +1069,7 @@ void Mgr::wantBuilding(int buildingType, int total, int priority)
     for (int i = 0; i < diff; i++) builds.push_back({priority, buildingType});
 }
 
-void Mgr::runBuild()
+void UsrAI::runBuild()
 {
     for (auto it = sites.begin(); it != sites.end();)  // 维护已登记工地
     {
@@ -1463,7 +1095,7 @@ void Mgr::runBuild()
             {
                 if (!crewOf(D_BUILD, siteKey(s)).empty()) failedSpots[hashKey(s.type, s.site.dr, s.site.ur)]++;
 
-                for (int sn : crewOf(D_BUILD, siteKey(s))) dropDuty(sn, true);
+                for (int sn : crewOf(D_BUILD, siteKey(s))) dropDuty(sn);
                 it = sites.erase(it);
                 continue;
             }
@@ -1471,7 +1103,7 @@ void Mgr::runBuild()
         const tagBuilding* b = building(s.sn);
         if (!b || b->Percent >= 100)
         {
-            for (int sn : crewOf(D_BUILD, siteKey(s))) dropDuty(sn, true);
+            for (int sn : crewOf(D_BUILD, siteKey(s))) dropDuty(sn);
             it = sites.erase(it);
             continue;
         }
@@ -1500,9 +1132,10 @@ void Mgr::runBuild()
         if (s.sn < 0) continue;
 
         vector<int> crew = crewOf(D_BUILD, siteKey(s));
-        while ((int)crew.size() < CREW_BUILD)
+        const int cap = buildCrew(s.type);
+        while ((int)crew.size() < cap)
         {
-            const int sn = pickWorker(centerOf(s.site, s.type), true);
+            const int sn = pickWorker(centerOf(s.site, s.type));
             if (sn < 0) break;
             setDuty(sn, D_BUILD, siteKey(s));
             crew.push_back(sn);
@@ -1543,7 +1176,7 @@ void Mgr::runBuild()
     }
 }
 
-int Mgr::projectCount(int action) const
+int UsrAI::projectCount(int action) const
 {
     const int host = actionInfo(action).host;
     if (host < 0) return 0;
@@ -1557,7 +1190,7 @@ int Mgr::projectCount(int action) const
     return cnt;
 }
 
-void Mgr::prodFrame()
+void UsrAI::prodFrame()
 {
     for (auto it = runningTech.begin(); it != runningTech.end();)
         if (projectCount(*it) > 0) ++it;
@@ -1570,7 +1203,7 @@ void Mgr::prodFrame()
     prods.clear();
 }
 
-bool Mgr::techAvailable(int action) const
+bool UsrAI::techAvailable(int action) const
 {
     const int host = actionInfo(action).host;
     if (host < 0 || buildingCount(host, true) <= 0) return false;
@@ -1587,7 +1220,7 @@ bool Mgr::techAvailable(int action) const
     }
 }
 
-int Mgr::idleHost(int buildingType, const set<int>& busy) const
+int UsrAI::idleHost(int buildingType, const set<int>& busy) const
 {
     for (int sn : buildingsOf(buildingType))
     {
@@ -1597,7 +1230,7 @@ int Mgr::idleHost(int buildingType, const set<int>& busy) const
     return -1;
 }
 
-int Mgr::queuedProd(int action) const
+int UsrAI::queuedProd(int action) const
 {
     int cnt = projectCount(action);
     for (const Want& order : prods)
@@ -1605,7 +1238,7 @@ int Mgr::queuedProd(int action) const
     return cnt;
 }
 
-void Mgr::wantUnit(int type, int total, int priority)
+void UsrAI::wantUnit(int type, int total, int priority)
 {
     const ActionInfo a = unitAction(type);
     if (a.host < 0 || buildingCount(a.host, true) <= 0) return;
@@ -1614,13 +1247,13 @@ void Mgr::wantUnit(int type, int total, int priority)
     for (int i = 0; i < diff; i++) prods.push_back({priority, a.action});
 }
 
-void Mgr::wantTech(int action, int priority)
+void UsrAI::wantTech(int action, int priority)
 {
     if (!techAvailable(action) || doneTech.count(action) || runningTech.count(action)) return;
     prods.push_back({priority, action});
 }
 
-void Mgr::runProd()
+void UsrAI::runProd()
 {
     sort(prods.begin(), prods.end(), wantFirst);
 
@@ -1638,34 +1271,29 @@ void Mgr::runProd()
     }
 }
 
-void Mgr::runDestroy()
+void UsrAI::runDestroy()
 {
     int excess = (int)farmerMap.size() - min(FARMER_MAX, POP_CAP - (int)armyMap.size() - 2);
     if (excess <= 0) return;
 
-    vector<int> cand;
-    cand.reserve(farmerMap.size());
-
-    for (int sn : laborPool)  // 先拆真正闲着的
-        if (farmer(sn) && !workerReserved(sn)) cand.push_back(sn);
-
-    for (const auto& it : farmerMap)  // 不够再拆采集工
-    {
-        const int sn = it.first;
-        if (workerReserved(sn)) continue;
-        if (find(cand.begin(), cand.end(), sn) != cand.end()) continue;
-        cand.push_back(sn);
-    }
+    vector<int> cand;  // 先拆闲着的, 再拆普通采集工
+    for (int pass = 0; pass < 2; pass++)
+        for (const auto& it : farmerMap)
+        {
+            auto d = duty.find(it.first);
+            const bool idle = d == duty.end();
+            if (pass == 0 ? idle : !idle && d->second.kind == D_GATHER) cand.push_back(it.first);
+        }
 
     for (int sn : cand)
     {
         if (excess-- <= 0) break;
-        dropDuty(sn, false);
+        dropDuty(sn);
         HumanAction(sn, sn);
     }
 }
 
-int Mgr::wpGain(const Pos& p) const
+int UsrAI::wpGain(const Pos& p) const
 {
     int sum = 0;
     const int rr = SCOUT_VIEW * SCOUT_VIEW;
@@ -1678,7 +1306,7 @@ int Mgr::wpGain(const Pos& p) const
     return sum;
 }
 
-int Mgr::pickWaypoint(const Pos& here, Pos& stand) const
+int UsrAI::pickWaypoint(const Pos& here, Pos& stand) const
 {
     const int wp = MAP_L / SCOUT_VIEW + 1;
     int bestIdx = -1;
@@ -1705,7 +1333,7 @@ int Mgr::pickWaypoint(const Pos& here, Pos& stand) const
     return bestIdx;
 }
 
-int Mgr::homeETA(const Pos& here)
+int UsrAI::homeETA(const Pos& here)
 {
     Pos anchor = base;
     int size = buildingSize(BUILDING_CENTER);
@@ -1745,7 +1373,7 @@ int Mgr::homeETA(const Pos& here)
     return (int)(dis(here, home) * SCOUT_DETOUR) * 25;
 }
 
-void Mgr::runScout()
+void UsrAI::runScout()
 {
     const tagArmy* unit = army(priest);
     if (!unit || base.dr < 0) return;
@@ -1819,7 +1447,7 @@ void Mgr::runScout()
     orderMove(priest, FloatPos(goalStand));
 }
 
-void Mgr::defence()
+void UsrAI::defence()
 {
     hostiles.clear();
     for (const auto& it : eArmyMap)
@@ -1848,7 +1476,7 @@ void Mgr::defence()
     runDefenders();
 }
 
-void Mgr::fixTower()
+void UsrAI::fixTower()
 {
     const tagBuilding* tar = nullptr;
     if (res.stone > 0 && gameFrame <= FIX_TOWER_UNTIL)
@@ -1863,14 +1491,14 @@ void Mgr::fixTower()
 
     if (!tar)
     {
-        if (fixer >= 0) dropDuty(fixer, true);
+        if (fixer >= 0) dropDuty(fixer);
         fixer = -1;
         return;
     }
 
     if (fixer < 0)
     {
-        const int sn = pickWorker(centerOf({tar->BlockDR, tar->BlockUR}, BUILDING_ARROWTOWER), true);
+        const int sn = pickWorker(centerOf({tar->BlockDR, tar->BlockUR}, BUILDING_ARROWTOWER));
         if (sn < 0) return;
         setDuty(sn, D_FIX, -1);
         fixer = sn;
@@ -1879,63 +1507,35 @@ void Mgr::fixTower()
     orderAction(fixer, tar->SN);
 }
 
-void Mgr::runTower()
+void UsrAI::runTower()
 {
+    const double alert = TOWER_ALERT * (double)BLOCKSIDELENGTH;
     for (int sn : buildingsOf(BUILDING_ARROWTOWER))
     {
         const tagBuilding* t = building(sn);
         if (!t || t->Percent < 100) continue;
 
-        const Pos here = {t->BlockDR, t->BlockUR};
-        int pick = -1;
-        double best = 0;
-
-        for (const auto& it : eArmyMap)
-        {
-            const tagArmy& e = *it.second;
-            if (lockOf(e.SN) >= 0) continue;
-            if (dis(FloatPos(e.DR, e.UR), baseF) >= TOWER_ALERT * (double)BLOCKSIDELENGTH) continue;
-
-            const double d = dis(here, Pos(e.BlockDR, e.BlockUR));
-            if (pick < 0 || d < best || (d == best && e.SN < pick)) best = d, pick = e.SN;
-        }
-
-        if (pick < 0)
-            for (int eSN : hostiles)
-            {
-                const tagArmy* e = enemyArmy(eSN);
-                if (!e) continue;
-
-                const double d = dis(here, Pos(e->BlockDR, e->BlockUR));
-                if (pick < 0 || d < best || (d == best && eSN < pick)) best = d, pick = eSN;
-            }
-
+        // 先点名没锁到我方的来敌, 没有再打来袭波次
+        const FloatPos here = centerOf({t->BlockDR, t->BlockUR}, t->Type);
+        int pick = nearestEnemy(here, enemies, [&](const tagArmy& e)
+        { return lockOf(e.SN) < 0 && dis(FloatPos(e.DR, e.UR), baseF) < alert; });
+        if (pick < 0) pick = nearestEnemy(here, hostiles, anyEnemy);
         if (pick >= 0) orderAction(sn, pick);
     }
 }
 
-int Mgr::defenceSelector(const tagArmy& u) const
+int UsrAI::defenceSelector(const tagArmy& u) const
 {
-    const Pos me = {u.BlockDR, u.BlockUR};
+    const FloatPos me(u.DR, u.UR);
 
     auto hostile = [&](int sn)
     { return enemyArmy(sn) && find(hostiles.begin(), hostiles.end(), sn) != hostiles.end(); };
 
-    // stone: -1 任意, 0 排除投石车, 1 只要投石车。
+    // stone: -1 任意, 0 排除投石车, 1 只要投石车
     auto nearest = [&](bool attracted, int stone)
     {
-        int pick = -1;
-        double best = 0;
-        for (int sn : hostiles)
-        {
-            const tagArmy* e = enemyArmy(sn);
-            if (!e || (lockOf(sn) >= 0) != attracted) continue;
-            if ((stone == 0 && e->Sort == AT_STONE_THROWER) || (stone == 1 && e->Sort != AT_STONE_THROWER)) continue;
-
-            const double d = dis(me, Pos(e->BlockDR, e->BlockUR));
-            if (pick < 0 || d < best || (d == best && sn < pick)) best = d, pick = sn;
-        }
-        return pick;
+        return nearestEnemy(me, hostiles, [&](const tagArmy& e)
+        { return (lockOf(e.SN) >= 0) == attracted && (stone < 0 || (e.Sort == AT_STONE_THROWER) == (stone == 1)); });
     };
 
     const tagArmy* cur = enemyArmy(u.WorkObjectSN);
@@ -1961,7 +1561,7 @@ int Mgr::defenceSelector(const tagArmy& u) const
     return attracted >= 0 ? attracted : nearest(false, 0);
 }
 
-void Mgr::runDefenders()
+void UsrAI::runDefenders()
 {
     if (assaultOn) return;
 
@@ -1976,69 +1576,61 @@ void Mgr::runDefenders()
     }
 }
 
-int Mgr::siegeDis(const Pos& p) const { return siegePos.dr < 0 ? dis(corner, p) : dis(siegePos, p); }
+int UsrAI::siegeDis(const Pos& p) const { return siegePos.dr < 0 ? dis(corner, p) : dis(siegePos, p); }
 
-void Mgr::offenseUpdate()
+void UsrAI::offenseUpdate()
 {
     tars.clear();
 
-    // 进攻目标只登记敌军
+    // 一般进攻目标只登记敌军
     for (const auto& it : eArmyMap)
     {
         const tagArmy& e = *it.second;
         if (corner.dr >= 0 && dis(corner, Pos(e.BlockDR, e.BlockUR)) > BELONG_CORNER) continue;
         tars.push_back(e.SN);
     }
+
 }
 
-int Mgr::attackSelector(const tagArmy& u) const
+int UsrAI::attackSelector(const tagArmy& u) const
 {
-    const Pos here = {u.BlockDR, u.BlockUR};
+    const FloatPos here(u.DR, u.UR);
 
-    auto nearest = [&](bool onlyPriestHunter)
+    // 最高优先级: 已索敌祭司的敌人, 可打断当前目标
+    if (priest >= 0)
     {
-        int pick = -1;
-        double best = 0.0;
-        for (int sn : tars)
-        {
-            const tagArmy* e = enemyArmy(sn);
-            if (!e) continue;
-            if (onlyPriestHunter && (priest < 0 || e->WorkObjectSN != priest)) continue;
-
-            const double d = dis(here, Pos(e->BlockDR, e->BlockUR));
-            if (pick < 0 || d < best || (d == best && sn < pick))
-            {
-                pick = sn;
-                best = d;
-            }
-        }
-        return pick;
-    };
-
-    const int hunter = nearest(true);  // 最高优先级: 已索敌祭司的敌人, 可打断当前目标
-    if (hunter >= 0) return hunter;
+        const int hunter = nearestEnemy(here, tars, [&](const tagArmy& e) { return e.WorkObjectSN == priest; });
+        if (hunter >= 0) return hunter;
+    }
 
     if (enemyArmy(u.WorkObjectSN) && find(tars.begin(), tars.end(), u.WorkObjectSN) != tars.end())
         return u.WorkObjectSN;
 
-    return nearest(false);
+    return nearestEnemy(here, tars, anyEnemy);
 }
 
-double Mgr::enemyGap(const FloatPos& at) const
+bool UsrAI::explicitRole(int sort)
+{ return sort == AT_COMPOSITE_BOWMAN || sort == AT_STONE_THROWER || sort == AT_PRIEST; }
+
+int UsrAI::otherSelector(const tagArmy& u) const
 {
-    double best = 1e9;
-    for (int sn : tars)
-    {
-        const tagArmy* e = enemyArmy(sn);
-        if (!e) continue;
-        best = min(best, dis(at, FloatPos(e->DR, e->UR)) / (double)BLOCKSIDELENGTH);
-    }
-    return best;
+    // 已下达且仍有效的目标优先保持
+    auto o = orders.find(u.SN);
+    if (o != orders.end() && o->second.target >= 0 && enemyArmy(o->second.target)) return o->second.target;
+    if (enemyArmy(u.WorkObjectSN)) return u.WorkObjectSN;
+
+    return nearestEnemy(FloatPos(u.DR, u.UR), enemies, anyEnemy);
 }
 
-FloatPos Mgr::marchGoal() const { return siegePos.dr >= 0 ? centerOf(siegePos, BUILDING_SIEGE) : FloatPos(corner); }
+double UsrAI::enemyGap(const FloatPos& at) const
+{
+    const tagArmy* e = enemyArmy(nearestEnemy(at, tars, anyEnemy));
+    return e ? dis(at, FloatPos(e->DR, e->UR)) / (double)BLOCKSIDELENGTH : 1e9;
+}
 
-Pos Mgr::retreatCell(const Pos& from, int steps) const
+FloatPos UsrAI::marchGoal() const { return siegePos.dr >= 0 ? centerOf(siegePos, BUILDING_SIEGE) : FloatPos(corner); }
+
+Pos UsrAI::retreatCell(const Pos& from, int steps) const
 {
     if (!inMap(from.dr, from.ur)) return {-1, -1};
 
@@ -2069,7 +1661,7 @@ Pos Mgr::retreatCell(const Pos& from, int steps) const
     return cur == from ? Pos{-1, -1} : cur;
 }
 
-void Mgr::vanguardPick()
+void UsrAI::vanguardPick()
 {
     if (assaultOn)
     {
@@ -2097,13 +1689,13 @@ void Mgr::vanguardPick()
     for (int i = HOME_KEEP; i < home.size(); i++) vanguard.insert(home[i]);
 }
 
-void Mgr::runAssault()
+void UsrAI::runAssault()
 {
     vector<const tagArmy*> units;
     for (const auto& it : armyMap)
     {
         const tagArmy* u = it.second;
-        if (u->Sort != AT_COMPOSITE_BOWMAN && u->Sort != AT_STONE_THROWER && u->Sort != AT_PRIEST) continue;
+        if (!explicitRole(u->Sort)) continue;  // 无明确策略的军队不参与后撤与行军
         if (u->Sort == AT_PRIEST && priestRushOn) continue;  // 冲锋中的祭司只管武器厂
         if (!inMap(u->BlockDR, u->BlockUR)) continue;
         if (!assaultOn && !inVanguard(u->SN)) continue;
@@ -2171,7 +1763,7 @@ void Mgr::runAssault()
     }
 }
 
-void Mgr::runTowerBreak()
+void UsrAI::runTowerBreak()
 {
     vector<const tagBuilding*> towers;
     for (const auto& it : eBuildingMap)
@@ -2242,7 +1834,7 @@ void Mgr::runTowerBreak()
     if (assaultOn && siegeSN >= 0) orderAction(priest, siegeSN);
 }
 
-void Mgr::offense()
+void UsrAI::offense()
 {
     if (base.dr < 0) return;
 
@@ -2271,9 +1863,20 @@ void Mgr::offense()
     if (breakNow != towerBreakOn)
     {
         towerBreakOn = breakNow;
-        for (const auto& it : armyMap) orders.erase(it.first);  // 切阶段时清掉上一阶段的军队命令
+        for (const auto& it : armyMap)  // 切阶段时清掉上一阶段的军队命令, 无明确策略的军队保持原目标
+            if (explicitRole(it.second->Sort)) orders.erase(it.first);
         towerShield.clear();                                    // 下一阶段重新建立稳定的弓兵-箭塔归属
     }
+
+    if (assaultOn)  // 无明确策略的军队: 统一打最近的敌军, 目标有效就不换, 不参与后撤
+        for (const auto& it : armyMap)
+        {
+            const tagArmy& u = *it.second;
+            if (explicitRole(u.Sort)) continue;
+
+            const int tar = otherSelector(u);
+            if (tar >= 0) orderAction(u.SN, tar);
+        }
 
     if (towerBreakOn)
     {
@@ -2286,7 +1889,7 @@ void Mgr::offense()
     if (assaultOn && priestRushOn && siegeSN >= 0) orderAction(priest, siegeSN);
 }
 
-void Mgr::clearRoad()
+void UsrAI::clearRoad()
 {
     auto inBand = [&](int dr, int ur)
     {
@@ -2294,7 +1897,8 @@ void Mgr::clearRoad()
         return d >= WAIT_BAND_IN && d <= WAIT_BAND_OUT;
     };
 
-    for (const auto& a : armyMap)  // 散开点表只在距离场变化后重扫
+    vector<Pos> points;  // 有人要挪时才扫图
+    for (const auto& a : armyMap)
     {
         const tagArmy* u = a.second;
         if (u->Sort == AT_PRIEST) continue;  // 祭司由 scout/offense 独占控制
@@ -2309,21 +1913,17 @@ void Mgr::clearRoad()
             continue;
         }
 
-        if (bandVer != navVer)  // 距离场没变, 带内格子也不会变
-        {
-            bandPoints.clear();
+        if (points.empty())
             for (int i = 0; i < MAP_L; i++)
                 for (int j = 0; j < MAP_U; j++)
-                    if (inBand(i, j)) bandPoints.push_back({i, j});
-            bandVer = navVer;
-        }
-        if (bandPoints.empty()) return;
+                    if (inBand(i, j)) points.push_back({i, j});
+        if (points.empty()) return;
 
-        orderMove(u->SN, FloatPos(bandPoints[rand() % bandPoints.size()]));
+        orderMove(u->SN, FloatPos(points[rand() % points.size()]));
     }
 }
 
-void Mgr::strategy()
+void UsrAI::strategy()
 {
     int b_prio = 100;
     int e_prio = 100;
@@ -2340,7 +1940,6 @@ void Mgr::strategy()
         phase = 0;
         wantBuilding(BUILDING_MARKET, 1, b_prio--);
         wantTech(BUILDING_MARKET_WOOD_UPGRADE, e_prio--);
-        wantUnit(AT_FARMER, 10, e_prio--);
 
         // 伐木科技开始研究后再走兵营/靶场/升级
         const bool woodTech = hasTech(BUILDING_MARKET_WOOD_UPGRADE) || runningTech.count(BUILDING_MARKET_WOOD_UPGRADE);
@@ -2368,30 +1967,4 @@ void Mgr::strategy()
     econPlan(phase);
 
     if (wantFarm > 0) wantBuilding(BUILDING_FARM, buildingCount(BUILDING_FARM) + wantFarm, FARM_PRIORITY);
-}
-
-void Mgr::update(const tagInfo& info)
-{
-    makeFrame(info);
-    laborFrame();
-
-    defence();
-    runHunt();  // strategy/econPlan 再规划剩余经济人口
-    if (!combat && !assaultOn) runScout();
-    if (!combat && !assaultOn) clearRoad();
-    offense();
-
-    strategy();  // econPlan 在这里定下各岗位人数
-
-    laborRelease();
-    laborFrame();
-
-    runProd();
-    runBuild();
-    laborFrame();
-    runEconomy();
-
-    runDestroy();
-
-    CommitInstruction();
 }
