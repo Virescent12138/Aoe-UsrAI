@@ -52,12 +52,11 @@ const int PLACE_ADJACENT = 100;  // 紧贴其它建筑
 const int PLACE_BONUS = -60;     // 落在该建筑理想距离带内
 const int PLACE_FAILED = 400;    // 之前建造失败过的地基, 按次数累加
 const int DEPOT_FAR = 8;         // 工作点离最近存放点超过这么多格产生智能仓储需求
-const int CREW_BUILD = 1;        // 功能性建筑(农田/军营/靶场/市场/房屋等)一个工地派几个人
+const int CREW_BUILD = 1;        // 功能性建筑一个工地派几个人
 const int CREW_DEPOT = 4;        // 仓库/谷仓一个工地最多派几个人
 
 // 侦察
 const int SCOUT_VIEW = 12;                                 // 侦察视野
-const int SCOUT_MIN_GAIN = 8;                              // 至少探明这么多格才有价值
 const int SCOUT_HOME_RADIUS = 45;                          // 只在基地直线距离此范围内探图, 内含区域由防守机制保证无敌人
 const int SCOUT_DONE = 2;                                  // 离路径点这么多格内就算站到了
 const int SCOUT_HOME_DONE = 5;                             // 离集合点这么多格内就算回到了
@@ -575,7 +574,6 @@ class Mgr : public UsrAI
 
     // 侦察
     void runScout();
-    int wpGain(const Pos& c) const;                       // c 为圆心半径 SCOUT_VIEW 内的未知格数
     int pickWaypoint(const Pos& here, Pos& stand) const;  // 最近的还有收益的路径点, 返回其下标
     void findHome();                                      // 更新 home 为可站立的回家集合点
 
