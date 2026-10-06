@@ -52,33 +52,29 @@ const int PLACE_ADJACENT = 100;  // 紧贴其它建筑
 const int PLACE_BONUS = -60;     // 落在该建筑理想距离带内
 const int PLACE_FAILED = 400;    // 之前建造失败过的地基, 按次数累加
 const int DEPOT_FAR = 8;         // 工作点离最近存放点超过这么多格产生智能仓储需求
-const int CREW_BUILD = 1;        // 功能性建筑一个工地派几个人
+const int CREW_BUILD = 1;        // 功能性建筑(农田/军营/靶场/市场/房屋等)一个工地派几个人
 const int CREW_DEPOT = 4;        // 仓库/谷仓一个工地最多派几个人
 
 // 侦察
 const int SCOUT_VIEW = 12;                                 // 侦察视野
+const int SCOUT_MIN_GAIN = 8;                              // 至少探明这么多格才有价值
 const int SCOUT_HOME_RADIUS = 45;                          // 只在基地直线距离此范围内探图, 内含区域由防守机制保证无敌人
 const int SCOUT_DONE = 2;                                  // 离路径点这么多格内就算站到了
 const int SCOUT_HOME_DONE = 5;                             // 离集合点这么多格内就算回到了
 const int SCOUT_HOME_STAY = 25 * 90;                       // 回避时间
 const int SCOUT_WAVE[3] = {25 * 240, 25 * 540, 25 * 840};  // 波次
 const int SCOUT_RETURN_LEAD = 25 * 30;                     // 波次前这么多帧开始回家
-const int SCOUT_BLIND_INTERVAL = 25;                       // 路径点“看光”盲查最多每这么多帧一次
 const int MOVE_RETRY = 25;                                 // 军队/祭司移动令连续这么多个 IDLE 帧无进展即判卡死
 const int MOVE_REISSUE = 10;                               // 同一移动目标最多每这么多帧补发一次
 const int ACTION_REISSUE = 10;                             // 军队/祭司同一动作目标最多每这么多帧补发一次
 const int ACTION_STUCK_HOLD = 25;                          // 动作隐式寻路判卡后，至少暂停这么多帧再尝试
 const double MOVE_GAIN = 0.5;                              // 两次 IDLE 之间至少靠近这么多格才算有进展
 
-// 子线程性能：战斗/命令维护仍每帧执行；下面只限制昂贵的全量规划频率。
-// 使用“距上次执行的帧差”，即使 AI 漏掉中间 GameFrame 也不会错过刷新。
 const int NAV_CHECK_INTERVAL = 5;         // 最多每 5 帧检查一次整图拓扑并按需重建 BFS nav
 const int RESOURCE_REFRESH_INTERVAL = 3;  // 资源池/猎物池最多每 3 帧重建一次
 const int ECON_REPLAN_INTERVAL = 3;       // 经济岗位重新匹配最多每 3 帧一次
 const int BUILD_PLAN_INTERVAL = 5;        // 新建筑全图选址最多每 5 帧一次
 
-// 如果一次取到的 GameFrame 跨了多帧，说明 AI 子线程落后，进入追帧模式。
-// 低优先级规划先跳过，但达到 FORCE 间隔后仍会执行，避免长期不更新。
 const int NAV_FORCE_INTERVAL = 25;
 const int RESOURCE_FORCE_INTERVAL = 10;
 const int ECON_FORCE_INTERVAL = 10;
@@ -119,7 +115,7 @@ const int GATHER_STUCK = 25 * 12;     // 村民命令连续这么多帧既没动
 const double GATHER_MOVE = 0.3;       // 到资源的格距变化小于这个值视为没动
 const double WORK_SWITCH_COST = 6.0;  // 调走在岗采集工相当于额外走这么多格
 const double WORK_CARRY_COST = 6.0;   // 身上已有资源时再增加这么多格的打断代价
-const double ECON_TRIPS = 4.0;        // 预期在同一采集点往返的趟数, 给长期运距加权
+const double ECON_TRIPS = 4.0;        // 预期在同一采集点往返的趟数
 const int ECON_SPOT_TOP = 12;         // 调配时每类资源只看运距最小的这么多个空闲点
 
 // 各阶段人员比例, 顺序 木 食 金
@@ -254,7 +250,7 @@ enum DutyKind
 struct Duty
 {
     int kind;
-    int target;  // 采集/农田为目标SN, 工地为 siteKey, 修塔/打猎为 -1
+    long long target;  // 采集/农田为目标SN, 工地为 siteKey, 修塔/打猎为 -1
 };
 
 inline bool inMap(int dr, int ur) { return dr >= 0 && ur >= 0 && dr < MAP_L && ur < MAP_U; }
@@ -282,8 +278,16 @@ inline double gatherRate(ResKind k, double dropDis)
     return CARRY_LIMIT / (gatherSec + walkSec);
 }
 
-int buildingSize(int type);
-int resourceSize(int type);
+inline int buildingSize(int type)
+{
+    return type == BUILDING_HOME || type == BUILDING_ARROWTOWER ? 2 : 3;
+}
+
+inline int resourceSize(int type)
+{
+    return type == RESOURCE_STONE || type == RESOURCE_GOLD || type == RESOURCE_FISH ? 2 : 1;
+}
+
 int buildWoodCost(int type);
 ResKind kindOf(int resourceType);
 
@@ -325,6 +329,7 @@ class Mgr : public UsrAI
         byType.reserve(32);
 
         duty.reserve(32);
+        crewIndex.reserve(64);
         holder.reserve(256);
         orders.reserve(64);
         resBlack.reserve(256);
@@ -333,6 +338,7 @@ class Mgr : public UsrAI
         vanguard.reserve(64);
 
         ev.reserve(64);
+        evMap.reserve(64);
         hostiles.reserve(64);
         builds.reserve(32);
         sites.reserve(32);
@@ -417,8 +423,9 @@ class Mgr : public UsrAI
         }
         return pick;
     }
-    const EnemyView* viewOf(int sn) const;  // 敌军SN -> 预计算视图, 不存在返回 nullptr
-    std::vector<EnemyView> ev;              // 本快照全部可见敌军视图
+    const EnemyView* viewOf(int sn) const;               // 敌军SN -> 预计算视图, 不存在返回 nullptr
+    std::vector<EnemyView> ev;                           // 本快照全部可见敌军视图
+    std::unordered_map<int, size_t> evMap;               // 敌军SN -> ev 下标, 避免 viewOf 线性扫描
     bool locate(int sn, FloatPos* at = nullptr) const;  // 任意SN的当前位置(建筑取中心), 不存在返回 false
 
     const std::vector<int>& buildingsOf(int type) const;
@@ -452,13 +459,14 @@ class Mgr : public UsrAI
     void dutyFrame();                                     // 清理阵亡村民的岗位
     double workerCost(int sn, const FloatPos& at) const;  // 距离 + 打断代价, 单位为格; 专职返回 -1
     int pickWorker(const FloatPos& at, double* cost = nullptr) const;
-    void setDuty(int sn, int kind, int target);           // 登记岗位(先解绑旧岗)
+    void setDuty(int sn, int kind, long long target); // 登记岗位(先解绑旧岗)
     void dropDuty(int sn);                                // 解绑并撤销命令, 无岗位即空闲
-    std::vector<int> crewOf(int kind, int target) const;  // 某岗位上的村民, 按 SN 升序
+    std::vector<int> crewOf(int kind, long long target) const; // 某岗位上的村民, 按 SN 升序
     bool workerReserved(int sn) const;                    // 在专职岗位上(农田/工地/修塔/打猎), 不许被抢
 
-    std::unordered_map<int, Duty> duty;   // 村民SN -> 岗位
-    std::unordered_map<int, int> holder;  // 采集点/农田SN -> 村民SN, 与 duty 同步维护
+    std::unordered_map<int, Duty> duty;                         // 村民SN -> 岗位
+    std::unordered_map<int, std::unordered_map<long long, std::vector<int>>> crewIndex; // kind -> target -> 村民SN升序列表
+    std::unordered_map<int, int> holder;                            // 采集点/农田SN -> 村民SN, 与 duty 同步维护
     std::vector<int> deadWorkers;         // dutyFrame 复用
 
     // 全局帧状态
@@ -513,7 +521,6 @@ class Mgr : public UsrAI
 
     // 人口分配
     int econPick(const int weight[E_COUNT], const int count[E_COUNT], const int cap[E_COUNT]) const;
-    Stock phaseNeed() const;   // 已排进队列但还没花出去的资源
     void econPlan(int phase);  // 定下 木/食/金 三类目标人数
     void runEconomy();         // 空闲者与超额类别的在岗者统一按代价补缺口
 
@@ -530,7 +537,6 @@ class Mgr : public UsrAI
     void buildFrame();                                             // 清空排队, 收集存放点需求
     void runBuild();                                               // 维护建造
     void wantBuilding(int buildingType, int total, int priority);  // 该类总数补到 total
-    void wantDepot(int depotType, int priority);                   // 有远端需求时补一座(首座谷仓无条件)
 
     bool depotCovered(int depotType, const Pos& c) const;  // 是否已覆盖
     bool depotRoom(const Pos& c) const;                    // 该点附近放得下一座存放点

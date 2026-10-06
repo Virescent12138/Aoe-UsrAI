@@ -8,7 +8,7 @@ ins UsrIns;
 static const int dx[8] = {0, 1, 0, -1, 1, 1, -1, -1};
 static const int dy[8] = {1, 0, -1, 0, 1, -1, -1, 1};
 
-static long long hashKey(int type, int dr, int ur)  // 哈希
+static long long siteKey(int type, int dr, int ur)  // 建筑类型 + 地图格
 { return ((long long)(type + 1) << 32) | (unsigned int)cellIdx(dr, ur); }
 
 void UsrAI::processData()
@@ -32,7 +32,6 @@ void Mgr::update(const tagInfo& info)
     runHunt();
 
     if (!combat && !assaultOn) runScout();
-
     if (!catchUpFrame && !combat && !assaultOn) clearRoad();
 
     offense();
@@ -45,18 +44,6 @@ void Mgr::update(const tagInfo& info)
     runDestroy();
 
     CommitInstruction();
-}
-
-int buildingSize(int type)
-{
-    if (type == BUILDING_HOME || type == BUILDING_ARROWTOWER) return 2;
-    return 3;
-}
-
-int resourceSize(int type)
-{
-    if (type == RESOURCE_STONE || type == RESOURCE_GOLD || type == RESOURCE_FISH) return 2;
-    return 1;
 }
 
 int buildWoodCost(int type)
@@ -88,7 +75,7 @@ ResKind kindOf(int resourceType)
 
 static ActionInfo actionRow(int key, bool byUnit)
 {
-    const ActionInfo table[] = {
+    static const ActionInfo table[] = {
         {BUILDING_CENTER_CREATEFARMER, BUILDING_CENTER, AT_FARMER, {0, (int)BUILDING_CENTER_CREATEFARMER_FOOD, 0, 0}},
         {BUILDING_CENTER_UPGRADE, BUILDING_CENTER, AT_NONE, {0, (int)BUILDING_CENTER_UPGRADE_BRONZEAGE_FOOD, 0, 0}},
         {BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN,
@@ -111,11 +98,6 @@ static ActionInfo actionRow(int key, bool byUnit)
 ActionInfo actionInfo(int action) { return actionRow(action, false); }
 ActionInfo unitAction(int unitType) { return actionRow(unitType, true); }
 
-static int buildCrew(int type)  // 仓库/谷仓最多 4 人, 其余功能性建筑 1 人
-{ return type == BUILDING_GRANARY || type == BUILDING_STOCK ? CREW_DEPOT : CREW_BUILD; }
-
-static int siteKey(const BuildSite& s) { return (s.type + 1) * MAP_L * MAP_U + cellIdx(s.site.dr, s.site.ur); }
-
 static int costVariant(int type)  // 建筑类型 -> 附加代价层
 {
     if (type == BUILDING_FARM) return 1;
@@ -124,8 +106,6 @@ static int costVariant(int type)  // 建筑类型 -> 附加代价层
     return 0;
 }
 
-static bool wantFirst(const Want& a, const Want& b)
-{ return a.priority != b.priority ? a.priority > b.priority : a.id > b.id; }
 
 const vector<int>& Mgr::buildingsOf(int type) const
 {
@@ -182,7 +162,7 @@ void Mgr::makeFrame(const tagInfo& info)
     fill(bldCnt.begin(), bldCnt.end(), 0);
     fill(bldDoneCnt.begin(), bldDoneCnt.end(), 0);
 
-    // 占格用 epoch，不再每帧清整张表。
+    // 占格用 epoch
     if (++blockEpoch == 0)
     {
         fill(blockStamp.begin(), blockStamp.end(), 0);
@@ -264,8 +244,10 @@ void Mgr::makeFrame(const tagInfo& info)
         corner.ur = (base.ur * 2 / MAP_U) ? 0 : MAP_U - 1;
     }
 
-    // 敌军视图: 本快照内所有战斗/进攻选择器共享, 避免反复 map 查找
+    // 敌军视图
     ev.clear();
+    evMap.clear();
+    hostiles.clear();
     const double alert2 = (DEF_ALERT * (double)BLOCKSIDELENGTH) * (DEF_ALERT * (double)BLOCKSIDELENGTH);
     for (const auto& a : info.enemy_armies)
     {
@@ -278,11 +260,10 @@ void Mgr::makeFrame(const tagInfo& info)
         v.hostile = dis2(FloatPos(e->DR, e->UR), baseF) < alert2;
         v.inTars = corner.dr >= 0 && dis2(corner, Pos(e->BlockDR, e->BlockUR)) <= (double)BELONG_CORNER * BELONG_CORNER;
         ev.push_back(v);
+        evMap[e->SN] = ev.size() - 1;
+        if (v.hostile) hostiles.push_back(e->SN);
     }
 
-    // 整图拓扑检查本身也是 O(MAP_L*MAP_U)，不必跟着主线程每帧跑。
-    // nav 为空时强制首建；之后最多每 NAV_CHECK_INTERVAL 帧检查一次。
-    const size_t cells = (size_t)MAP_L * MAP_U;
     const int navAge = gameFrame - lastNavCheckFrame;
     const bool navDue = nav.empty() || navAge >= NAV_CHECK_INTERVAL;
     const bool navForced = nav.empty() || navAge >= NAV_FORCE_INTERVAL;
@@ -290,7 +271,7 @@ void Mgr::makeFrame(const tagInfo& info)
     if (navDue && (!catchUpFrame || navForced))
     {
         lastNavCheckFrame = gameFrame;
-        bool navDirty = nav.size() != cells;
+        bool navDirty = nav.size() != (size_t)MAP_L * MAP_U;
 
         for (int i = 0; i < MAP_L; i++)
             for (int j = 0; j < MAP_U; j++)
@@ -323,7 +304,6 @@ void Mgr::makeFrame(const tagInfo& info)
         }
     }
 
-    // 命令/岗位生命周期必须逐帧维护；资源/猎物池允许短暂缓存。
     dutyFrame();
     orderFrame();
 
@@ -409,9 +389,8 @@ bool Mgr::locate(int sn, FloatPos* at) const
 
 const EnemyView* Mgr::viewOf(int sn) const
 {
-    for (const EnemyView& v : ev)
-        if (v.e->SN == sn) return &v;
-    return nullptr;
+    auto it = evMap.find(sn);
+    return it == evMap.end() ? nullptr : &ev[it->second];
 }
 
 void Mgr::orderFrame()
@@ -427,9 +406,6 @@ void Mgr::orderFrame()
             it = orders.erase(it);
             continue;
         }
-
-        // halt 只是把当前战斗/动作打断一次，不是“去某个地点”的寻路命令。
-        // 等单位真正空闲或原目标消失后直接销毁，避免零距离移动进入 stuck/retry 循环。
         if (o.halt)
         {
             if (!a || a->NowState == HUMAN_STATE_IDLE || !enemyArmy(a->WorkObjectSN))
@@ -444,7 +420,7 @@ void Mgr::orderFrame()
         const FloatPos here = f ? FloatPos(f->DR, f->UR) : FloatPos(a->DR, a->UR);
         const double d = dis(here, o.at) / cellLen;
 
-        if (f)  // 村民: 带着资源、在干别的活或位置有变化都算有进展
+        if (f)  // 村民
         {
             const int obj = f->WorkObjectSN;
             if (f->Resource > 0 || (obj != o.target && locate(obj)) || fabs(d - o.best) >= GATHER_MOVE)
@@ -466,49 +442,34 @@ void Mgr::orderFrame()
                 continue;
             }
 
-            if (o.target < 0)  // 纯移动令
+            auto checkProgress = [&](bool trackStuckAt)
             {
                 if (d < o.best - MOVE_GAIN)
                 {
                     o.best = d;
                     o.idle = 0;
                     o.stuck = false;
+                    if (trackStuckAt) o.stuckAt = -1;
+                    return;
                 }
-                else
-                {
-                    o.idle += gameFrame - o.lastCheck;
-                    if (o.idle >= MOVE_RETRY) o.stuck = true;
-                }
-            }
+
+                o.idle += gameFrame - o.lastCheck;
+                if (o.idle < MOVE_RETRY || (trackStuckAt && o.stuck)) return;
+
+                o.stuck = true;
+                if (trackStuckAt) o.stuckAt = gameFrame;
+            };
+
+            if (o.target < 0) checkProgress(false);
             else if (a->WorkObjectSN == o.target)
             {
-                // 已经锁到正确动作目标，不把短暂 IDLE 当成寻路失败。
+                // 已经锁到正确动作目标
                 o.best = d;
                 o.idle = 0;
                 o.stuck = false;
                 o.stuckAt = -1;
             }
-            else
-            {
-                // 军队/祭司对目标 SN 的动作同样会隐式寻路。
-                // 原实现这里完全不判卡，orderAction 又会每帧重发，最容易形成高频死循环。
-                if (d < o.best - MOVE_GAIN)
-                {
-                    o.best = d;
-                    o.idle = 0;
-                    o.stuck = false;
-                    o.stuckAt = -1;
-                }
-                else
-                {
-                    o.idle += gameFrame - o.lastCheck;
-                    if (o.idle >= MOVE_RETRY && !o.stuck)
-                    {
-                        o.stuck = true;
-                        o.stuckAt = gameFrame;
-                    }
-                }
-            }
+            else checkProgress(true);
         }
         o.lastCheck = gameFrame;
         ++it;
@@ -524,8 +485,6 @@ void Mgr::orderMove(int sn, const FloatPos& at, bool back)
     if (it != orders.end() && !it->second.halt && it->second.target < 0 && it->second.back == back &&
         dis(it->second.at, at) < (double)BLOCKSIDELENGTH * 0.5)
     {
-        // 同一个终点不再每个 IDLE 帧重发。重发节流与 idle/stuck 计数相互独立，
-        // 因此补发不会把“无进展”计数清零，也就不会妨碍最终判卡。
         if (!it->second.stuck && a->NowState == HUMAN_STATE_IDLE && gameFrame - it->second.issued >= MOVE_REISSUE)
         {
             HumanMove(sn, it->second.at.dr, it->second.at.ur);
@@ -597,7 +556,6 @@ void Mgr::orderAction(int sn, int target)
 
     if (f)
     {
-        // 村民行为保持原 UsrAI：采集/施工自己的 GATHER_* 卡死逻辑不改。
         if (obj != target || state == HUMAN_STATE_IDLE) HumanAction(sn, target);
         return;
     }
@@ -605,7 +563,6 @@ void Mgr::orderAction(int sn, int target)
     Order& o = it->second;
     if (o.stuck)
     {
-        // 不永久封死目标：先冷却；若目标期间主动靠近，orderFrame 会提前清掉 stuck。
         if (o.stuckAt < 0 || gameFrame - o.stuckAt < ACTION_STUCK_HOLD) return;
 
         o.stuck = false;
@@ -613,7 +570,7 @@ void Mgr::orderAction(int sn, int target)
         o.idle = 0;
         o.lastCheck = gameFrame;
         o.best = dis(here, o.at) / (double)BLOCKSIDELENGTH;
-        o.issued = -1000000000;  // 冷却结束后允许立即低频重试一次
+        o.issued = -1000000000;  // 冷却结束后
     }
 
     if (obj == target && state != HUMAN_STATE_IDLE) return;  // 已经在正确执行
@@ -665,11 +622,15 @@ int Mgr::pickWorker(const FloatPos& at, double* outCost) const
     return best;
 }
 
-void Mgr::setDuty(int sn, int kind, int target)
+void Mgr::setDuty(int sn, int kind, long long target)
 {
     dropDuty(sn);
     duty[sn] = {kind, target};
-    if (kind == D_GATHER || kind == D_FARM) holder[target] = sn;
+
+    vector<int>& crew = crewIndex[kind][target];
+    crew.insert(lower_bound(crew.begin(), crew.end(), sn), sn);
+
+    if (kind == D_GATHER || kind == D_FARM) holder[(int)target] = sn;
 }
 
 void Mgr::dropDuty(int sn)
@@ -677,18 +638,32 @@ void Mgr::dropDuty(int sn)
     auto it = duty.find(sn);
     if (it == duty.end()) return;
 
-    if (it->second.kind == D_GATHER || it->second.kind == D_FARM) holder.erase(it->second.target);
+    const Duty old = it->second;
+    auto ki = crewIndex.find(old.kind);
+    if (ki != crewIndex.end())
+    {
+        auto ci = ki->second.find(old.target);
+        if (ci != ki->second.end())
+        {
+            vector<int>& crew = ci->second;
+            auto p = lower_bound(crew.begin(), crew.end(), sn);
+            if (p != crew.end() && *p == sn) crew.erase(p);
+            if (crew.empty()) ki->second.erase(ci);
+        }
+        if (ki->second.empty()) crewIndex.erase(ki);
+    }
+
+    if (old.kind == D_GATHER || old.kind == D_FARM) holder.erase((int)old.target);
     duty.erase(it);
     orders.erase(sn);
 }
 
-vector<int> Mgr::crewOf(int kind, int target) const
+vector<int> Mgr::crewOf(int kind, long long target) const
 {
-    vector<int> out;
-    for (const auto& it : duty)
-        if (it.second.kind == kind && it.second.target == target) out.push_back(it.first);
-    sort(out.begin(), out.end());
-    return out;
+    auto ki = crewIndex.find(kind);
+    if (ki == crewIndex.end()) return {};
+    auto ci = ki->second.find(target);
+    return ci == ki->second.end() ? vector<int>() : ci->second;
 }
 
 bool Mgr::workerReserved(int sn) const
@@ -978,7 +953,7 @@ void Mgr::runEconomy()
     int cur[E_COUNT] = {};
     if (replan) catOf.clear();
 
-    // 已有岗位的命令维护仍然逐帧进行；这里只把“重新匹配岗位”降频。
+    // 已有岗位的命令维护仍然逐帧进行
     for (const auto& it : duty)
     {
         if (it.second.kind != D_GATHER && it.second.kind != D_FARM) continue;
@@ -997,7 +972,6 @@ void Mgr::runEconomy()
 
     const double cellsPerSec = (double)HUMAN_SPEED * 25.0 / (double)BLOCKSIDELENGTH;
 
-    // 每轮在(候选人, 缺口类别的空闲点)中取代价最小的一对。
     while (true)
     {
         bool short_ = false;
@@ -1037,7 +1011,7 @@ void Mgr::runEconomy()
                 {
                     if (holder.count(s.sn)) continue;
 
-                    // pools 允许缓存几帧，资源已经消失时直接忽略，避免产生短暂脏岗位。
+                    // pools 允许缓存几帧
                     if (k == RK_FARM)
                     {
                         if (!building(s.sn)) continue;
@@ -1072,14 +1046,6 @@ void Mgr::runEconomy()
     }
 }
 
-Stock Mgr::phaseNeed() const
-{
-    Stock need;
-    for (const Want& w : builds) need.wood += buildWoodCost(w.id);
-    for (const Want& w : prods) need += actionInfo(w.id).cost;
-    return need;
-}
-
 void Mgr::econPlan(int phase)
 {
     for (int r = 0; r < E_COUNT; r++) quota[r] = 0;
@@ -1093,14 +1059,17 @@ void Mgr::econPlan(int phase)
     }
     if (pop <= 0) return;
 
-    const Stock need = phaseNeed();
+    Stock need;
+    for (const Want& w : builds) need.wood += buildWoodCost(w.id);
+    for (const Want& w : prods) need += actionInfo(w.id).cost;
+
     const int left[E_COUNT] = {need.wood, need.meat, need.gold};
     const int have[E_COUNT] = {res.wood, res.meat, res.gold};
 
     int weight[E_COUNT];
     for (int r = 0; r < E_COUNT; r++)
     {
-        // 数量带防抖: 超出需求 SURPLUS_BAND 才判富余, 跌回需求以下立刻取消
+        // 数量带防抖
         if (econSurplus[r] && have[r] < left[r]) econSurplus[r] = false;
         else if (!econSurplus[r] && have[r] >= left[r] + SURPLUS_BAND) econSurplus[r] = true;
 
@@ -1155,7 +1124,6 @@ bool Mgr::buildAvailable(int type) const
 
 void Mgr::buildFrame()
 {
-    // builds 是本帧需求队列，必须清；仓储锚点则只在资源池刷新后重算。
     builds.clear();
 
     if (lastDepotRefreshFrame == lastResourceRefreshFrame) return;
@@ -1227,8 +1195,6 @@ const vector<int>& Mgr::placeCost(int type)
         if (v == 1 && granary) ringAdd(g, p, 3, PLACE_BONUS, 2, 5);                                   // 农田靠近谷仓
         if (v == 2 && (granary || b.Type == BUILDING_STOCK)) ringAdd(g, p, 3, PLACE_ADJACENT, 0, 5);  // 别挡存放点
     }
-    // 同一个 revision 下 findSpot 会反复查询 2x2/3x3 区域均值；
-    // 预先构建二维前缀和，把每个候选的 4/9 次访问降为 O(1)。
     vector<long long>& pref = costPrefix[v];
     const int stride = MAP_U + 1;
     pref.assign((size_t)(MAP_L + 1) * stride, 0);
@@ -1287,7 +1253,7 @@ Pos Mgr::findSpot(int type, int& firstWorker)
     const vector<long long>& pref = costPrefix[variant];
     const int stride = MAP_U + 1;
 
-    // 存放点收益: 各需求点到现有存放点的运距与候选位置无关, 先算好
+    // 存放点收益
     const bool depot = type == BUILDING_GRANARY || type == BUILDING_STOCK;
     spotPend.clear();
     if (depot)
@@ -1303,7 +1269,7 @@ Pos Mgr::findSpot(int type, int& firstWorker)
     {
         const int i = site.dr, j = site.ur;
 
-        // placeSites 跨帧缓存；当前帧占格可能已变化，选址前做一次廉价最终校验。
+        // placeSites 跨帧缓存
         if (!canPlace(i, j, size)) continue;
 
         const long long sum = pref[(size_t)(i + size) * stride + (j + size)] - pref[(size_t)i * stride + (j + size)] -
@@ -1320,7 +1286,7 @@ Pos Mgr::findSpot(int type, int& firstWorker)
             v -= (long long)(saved / (double)BLOCKSIDELENGTH * 40);
         }
 
-        auto fit = failedSpots.find(hashKey(type, i, j));
+        auto fit = failedSpots.find(siteKey(type, i, j));
         if (fit != failedSpots.end()) v += (long long)PLACE_FAILED * fit->second;
         if (best.dr >= 0 && v >= bestCost) continue;  // 派人代价非负, 不可能更优
 
@@ -1337,13 +1303,6 @@ Pos Mgr::findSpot(int type, int& firstWorker)
         }
     }
     return best;
-}
-
-void Mgr::wantDepot(int depotType, int priority)
-{
-    bool pending = depotType == BUILDING_GRANARY ? !granaryPendings.empty() : !stockPendings.empty();
-    if (!pending || buildingCount(depotType, true) != buildingCount(depotType)) return;
-    wantBuilding(depotType, buildingCount(depotType) + 1, priority);
 }
 
 int Mgr::queuedBuild(int type) const
@@ -1388,9 +1347,9 @@ void Mgr::runBuild()
             }
             if (s.sn < 0)
             {
-                if (!crewOf(D_BUILD, siteKey(s)).empty()) failedSpots[hashKey(s.type, s.site.dr, s.site.ur)]++;
+                if (!crewOf(D_BUILD, siteKey(s.type, s.site.dr, s.site.ur)).empty()) failedSpots[siteKey(s.type, s.site.dr, s.site.ur)]++;
 
-                for (int sn : crewOf(D_BUILD, siteKey(s))) dropDuty(sn);
+                for (int sn : crewOf(D_BUILD, siteKey(s.type, s.site.dr, s.site.ur))) dropDuty(sn);
                 it = sites.erase(it);
                 continue;
             }
@@ -1398,7 +1357,7 @@ void Mgr::runBuild()
         const tagBuilding* b = building(s.sn);
         if (!b || b->Percent >= 100)
         {
-            for (int sn : crewOf(D_BUILD, siteKey(s))) dropDuty(sn);
+            for (int sn : crewOf(D_BUILD, siteKey(s.type, s.site.dr, s.site.ur))) dropDuty(sn);
             it = sites.erase(it);
             continue;
         }
@@ -1426,13 +1385,13 @@ void Mgr::runBuild()
     {
         if (s.sn < 0) continue;
 
-        vector<int> crew = crewOf(D_BUILD, siteKey(s));
-        int cap = s.type == BUILDING_GRANARY || s.type == BUILDING_STOCK ? CREW_DEPOT : CREW_BUILD;
-        while (crew.size() < cap)
+        vector<int> crew = crewOf(D_BUILD, siteKey(s.type, s.site.dr, s.site.ur));
+        const int cap = (s.type == BUILDING_GRANARY || s.type == BUILDING_STOCK) ? CREW_DEPOT : CREW_BUILD;
+        while ((int)crew.size() < cap)
         {
-            int sn = pickWorker(centerOf(s.site, s.type));
+            const int sn = pickWorker(centerOf(s.site, s.type));
             if (sn < 0) break;
-            setDuty(sn, D_BUILD, siteKey(s));
+            setDuty(sn, D_BUILD, siteKey(s.type, s.site.dr, s.site.ur));
             crew.push_back(sn);
         }
         for (int sn : crew) orderAction(sn, s.sn);
@@ -1443,7 +1402,7 @@ void Mgr::runBuild()
     if (catchUpFrame && buildPlanAge < BUILD_FORCE_INTERVAL) return;
     lastBuildPlanFrame = gameFrame;
 
-    sort(builds.begin(), builds.end(), wantFirst);
+    sort(builds.begin(), builds.end(), [](const Want& a, const Want& b) { return a.priority != b.priority ? a.priority > b.priority : a.id > b.id; });
 
     const Stock left = available();
     int usedWood = 0;
@@ -1468,7 +1427,7 @@ void Mgr::runBuild()
         s.site = spot;
         s.born = gameFrame;
         sites.push_back(s);
-        setDuty(first, D_BUILD, siteKey(s));
+        setDuty(first, D_BUILD, siteKey(s.type, s.site.dr, s.site.ur));
 
         placed.insert(cell);
         usedWood = wood;
@@ -1555,7 +1514,7 @@ void Mgr::wantTech(int action, int priority)
 
 void Mgr::runProd()
 {
-    sort(prods.begin(), prods.end(), wantFirst);
+    sort(prods.begin(), prods.end(), [](const Want& a, const Want& b) { return a.priority != b.priority ? a.priority > b.priority : a.id > b.id; });
 
     set<int> busy;  // 同一建筑本帧只能接一个新命令
     for (const Want& order : prods)
@@ -1673,6 +1632,7 @@ void Mgr::runScout()
     const int wp = MAP_L / SCOUT_VIEW + 1;
     if (wpDone.empty()) wpDone.assign(wp * wp, 0);
 
+    // 波次前 SCOUT_RETURN_LEAD 秒起锁定回家, 持续到该波次避险结束
     if (scoutHomeUntil <= gameFrame)
     {
         scoutHomeUntil = 0;
@@ -1691,7 +1651,6 @@ void Mgr::runScout()
                 break;
             }
         }
-
         if (scoutHomeUntil == 0 && gameFrame > SCOUT_WAVE[2] + SCOUT_HOME_STAY) scoutHomeUntil = 1000000000;
     }
 
@@ -1699,13 +1658,11 @@ void Mgr::runScout()
     {
         goalWp = -1;
         goalStand = {-1, -1};
-
         if (scoutAtHome)
         {
             orders.erase(priest);
             return;
         }
-
         findHome();
         if (dis(Fhere, FloatPos(home)) <= SCOUT_HOME_DONE * (double)BLOCKSIDELENGTH)
         {
@@ -1713,18 +1670,17 @@ void Mgr::runScout()
             orders.erase(priest);
             return;
         }
-
         orderMove(priest, FloatPos(home));
         return;
     }
 
     if (goalWp >= 0)
     {
-        if (gameFrame - lastBlindCheckFrame >= SCOUT_BLIND_INTERVAL) lastBlindCheckFrame = gameFrame;
+        const bool reached = dis(Fhere, FloatPos(goalStand)) <= SCOUT_DONE * (double)BLOCKSIDELENGTH;
+        const bool blocked =
+            cell(goalStand.dr, goalStand.ur).type != MAPPATTERN_UNKNOWN && !walkable(goalStand.dr, goalStand.ur);
 
-        if (dis(Fhere, FloatPos(goalStand)) <= SCOUT_DONE * (double)BLOCKSIDELENGTH ||
-            (cell(goalStand.dr, goalStand.ur).type != MAPPATTERN_UNKNOWN && !walkable(goalStand.dr, goalStand.ur)) ||
-            orderStuck(priest))
+        if (reached || blocked || orderStuck(priest))
         {
             orders.erase(priest);
             wpDone[goalWp] = 1;
@@ -1744,12 +1700,6 @@ void Mgr::runScout()
 
 void Mgr::defence()
 {
-    hostiles.clear();
-    for (const auto& it : eArmyMap)
-        if (dis2(FloatPos(it.second->DR, it.second->UR), baseF) <
-            (DEF_ALERT * (double)BLOCKSIDELENGTH) * (DEF_ALERT * (double)BLOCKSIDELENGTH))
-            hostiles.push_back(it.first);
-
     int cnt = 0;
     for (const auto& it : armyMap)
         if (it.second->Sort == AT_STONE_THROWER) cnt++;
@@ -1759,15 +1709,11 @@ void Mgr::defence()
         assaultOn = true;
         return;
     }
-
     fixTower();
-
     combat = !hostiles.empty();
     if (!combat) return;
-
     auto it = orders.find(priest);
     if (!assaultOn && it != orders.end() && it->second.target < 0 && !it->second.halt) orders.erase(it);
-
     runTower();
     runDefenders();
 }
@@ -2150,7 +2096,7 @@ void Mgr::offense()
         towerShield.clear();  // 下一阶段重新建立稳定的弓兵-箭塔归属
     }
 
-    if (assaultOn)  // 无明确策略的军队: 统一打最近的敌军, 目标有效就不换, 不参与后撤
+    if (assaultOn)  // 无明确策略的军队
         for (const auto& it : armyMap)
         {
             const tagArmy& u = *it.second;
@@ -2186,34 +2132,24 @@ void Mgr::clearRoad()
     { return Pos((int)(p.dr / (double)BLOCKSIDELENGTH), (int)(p.ur / (double)BLOCKSIDELENGTH)); };
 
     roadUnits.clear();
+    roadReserved.clear();
     for (const auto& a : armyMap)
     {
         const tagArmy* u = a.second;
         if (u->Sort == AT_PRIEST) continue;  // 祭司由 scout/offense 独占控制
-        if (inVanguard(u->SN) || u->NowState != HUMAN_STATE_IDLE) continue;
-        roadUnits.push_back(u);
+
+        if (inBand(u->BlockDR, u->BlockUR)) roadReserved.insert(cellIdx(u->BlockDR, u->BlockUR));
+
+        if (!inVanguard(u->SN) && u->NowState == HUMAN_STATE_IDLE) roadUnits.push_back(u);
     }
     sort(roadUnits.begin(), roadUnits.end(), [](const tagArmy* a, const tagArmy* b) { return a->SN < b->SN; });
 
-    // 已经站进等待带
     for (const tagArmy* u : roadUnits)
     {
         if (!inBand(u->BlockDR, u->BlockUR)) continue;
         auto it = orders.find(u->SN);
         if (it != orders.end() && it->second.target < 0 && !it->second.back && !it->second.halt) orders.erase(it);
     }
-
-    roadReserved.clear();
-
-    // 占住当前已在等待带内的军队所在格
-    for (const auto& a : armyMap)
-    {
-        const tagArmy* u = a.second;
-        if (u->Sort != AT_PRIEST && inBand(u->BlockDR, u->BlockUR))
-            roadReserved.insert(cellIdx(u->BlockDR, u->BlockUR));
-    }
-
-    // 占住仍有效的既有等待带目标，避免多个单位拿到同一目的地
     for (const auto& it : orders)
     {
         const Order& o = it.second;
@@ -2235,8 +2171,6 @@ void Mgr::clearRoad()
         if (it != orders.end() && it->second.target < 0 && !it->second.back && !it->second.halt)
         {
             oldGoal = orderCell(it->second.at);
-
-            // 原目标仍有效时继续它；orderMove 自己负责低频补发与 stuck 计数。
             if (!it->second.stuck && inBand(oldGoal.dr, oldGoal.ur))
             {
                 orderMove(u->SN, it->second.at);
@@ -2259,7 +2193,7 @@ void Mgr::clearRoad()
 
             const long long dr = (long long)here.dr - p.dr;
             const long long ur = (long long)here.ur - p.ur;
-            const double d = (double)(dr * dr + ur * ur);  // 只比较远近，无需 sqrt
+            const double d = (double)(dr * dr + ur * ur);
             if (pick < 0 || d < best || (d == best && idx < cellIdx(points[pick].dr, points[pick].ur)))
             {
                 pick = i;
@@ -2268,7 +2202,7 @@ void Mgr::clearRoad()
         }
         if (pick < 0) continue;
 
-        orders.erase(u->SN);  // 新路径必须从干净状态开始，不能继承旧 stuck
+        orders.erase(u->SN);  // 新路径必须从干净状态开始
         orderMove(u->SN, FloatPos(points[pick]));
         roadReserved.insert(cellIdx(points[pick].dr, points[pick].ur));
     }
@@ -2282,6 +2216,13 @@ void Mgr::strategy()
 
     const int homeCnt = min(12, (int)(farmerMap.size() + armyMap.size()) / 4 + 1);
     wantBuilding(BUILDING_HOME, homeCnt, b_prio--);
+
+    auto wantDepot = [&](int depotType, int priority)
+    {
+        const bool pending = depotType == BUILDING_GRANARY ? !granaryPendings.empty() : !stockPendings.empty();
+        if (pending && buildingCount(depotType, true) == buildingCount(depotType))
+            wantBuilding(depotType, buildingCount(depotType) + 1, priority);
+    };
 
     wantDepot(BUILDING_STOCK, b_prio--);
     wantDepot(BUILDING_GRANARY, b_prio--);
